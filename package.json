@@ -1,6 +1,6 @@
 {
   "name": "auway",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "One command to detect and update all your AI coding agents (pi, Claude Code, OpenCode, Codex, Copilot CLI...) with install-manager awareness",
   "type": "module",
   "bin": {
