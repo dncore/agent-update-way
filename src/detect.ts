@@ -242,8 +242,15 @@ export async function detectAllAsync(): Promise<DetectedAgent[]> {
       agent.skipReason =
         'project-local dependency (under node_modules) - not a global install, skipping';
     } else if (manager === 'user') {
-      agent.skipReason =
-        'user-level install under ~/node_modules - update manually (e.g. bun add -g <pkg> or npm update --prefix ~ <pkg>)';
+      // Structured hint: short first line, then a copy-paste update command.
+      const pkg = target ?? f.def.npmPackage;
+      const hint =
+        f.binPath === join(homedir(), '.bun', 'bin', f.def.name) && pkg
+          ? `bun add -g ${pkg}`
+          : pkg
+            ? `npm update --prefix ~ ${pkg}`
+            : 'update it via the tool that installed it';
+      agent.skipReason = `user-level install under ~/node_modules\nTo update manually: ${hint}\n(auway only auto-updates standard global installs)`;
     } else if (manager === 'native' && !f.def.nativeUpdate.length) {
       agent.skipReason = `no known update command for native install of ${f.def.label}`;
     }
@@ -290,8 +297,14 @@ export function detectAll(): DetectedAgent[] {
       agent.skipReason =
         'project-local dependency (under node_modules) - not a global install, skipping';
     } else if (manager === 'user') {
-      agent.skipReason =
-        'user-level install under ~/node_modules - update manually (e.g. bun add -g <pkg> or npm update --prefix ~ <pkg>)';
+      const pkg = target ?? def.npmPackage;
+      const hint =
+        binPath === join(homedir(), '.bun', 'bin', def.name) && pkg
+          ? `bun add -g ${pkg}`
+          : pkg
+            ? `npm update --prefix ~ ${pkg}`
+            : 'update it via the tool that installed it';
+      agent.skipReason = `user-level install under ~/node_modules\nTo update manually: ${hint}\n(auway only auto-updates standard global installs)`;
     } else if (manager === 'native' && !def.nativeUpdate.length) {
       agent.skipReason = `no known update command for native install of ${def.label}`;
     }

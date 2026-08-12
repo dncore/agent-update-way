@@ -96,8 +96,15 @@ function taskLines(t: RenderTask, frame: string): string[] {
       const suffix = changed ? `${t.before} → ${t.after}` : `up to date (${t.after ?? t.before ?? '?'})`;
       return [color.green(`✔ ${t.label}  ${suffix}`) + dur];
     }
-    case 'skipped':
-      return [color.yellow(`⏭ ${t.label}  skipped: ${t.error ?? 'no update command'}`)];
+    case 'skipped': {
+      // Multi-line reasons (e.g. user-level installs) expand below the line.
+      const skipLines = (t.error ?? 'no update command').split('\n');
+      const out = [color.yellow(`⏭ ${t.label}  skipped: ${skipLines[0] ?? ''}`)];
+      for (const extra of skipLines.slice(1)) {
+        out.push(color.dim('  ' + extra.trimStart()));
+      }
+      return out;
+    }
     case 'failed': {
       const errLines = (t.error ?? 'unknown error').split('\n');
       const out = [color.red(`✖ ${t.label}  failed: ${errLines[0] ?? ''}`) + dur];

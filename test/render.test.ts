@@ -67,6 +67,21 @@ describe('buildPanelLines', () => {
     expect(stripAnsi(lines[0]!)).toBe('⏭ Pi  skipped: project-local install');
   });
 
+  it('expands multi-line skip reasons below the line', () => {
+    const lines = buildPanelLines(
+      [
+        task({
+          label: 'Oh My Pi',
+          state: 'skipped',
+          error: 'user-level install under ~/node_modules\nTo update manually: bun add -g @oh-my-pi/pi-coding-agent',
+        }),
+      ],
+      ' ',
+    );
+    expect(stripAnsi(lines[0]!)).toBe('⏭ Oh My Pi  skipped: user-level install under ~/node_modules');
+    expect(stripAnsi(lines[1]!)).toBe('  To update manually: bun add -g @oh-my-pi/pi-coding-agent');
+  });
+
   it('renders failed tasks and expands error lines below', () => {
     const lines = buildPanelLines(
       [
