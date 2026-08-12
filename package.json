@@ -1,0 +1,41 @@
+{
+  "name": "agent-update-way",
+  "version": "0.1.0",
+  "description": "One command to detect and update all your AI coding agents (pi, Claude Code, OpenCode, Codex, Copilot CLI...) with install-manager awareness",
+  "type": "module",
+  "bin": {
+    "auway": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --target node18 --clean && chmod +x dist/cli.js",
+    "prepublishOnly": "npm run build && npm test",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "update",
+    "upgrade",
+    "claude",
+    "pi",
+    "opencode",
+    "codex",
+    "copilot"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}
