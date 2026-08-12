@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { detectAll, managerLabel, npmGlobalRoot } from './detect.js';
+import { detectAll, managerLabel } from './detect.js';
 import { updateAgents } from './update.js';
-import type { DetectedAgent, UpdateResult } from './types.js';
+import { createRenderer, color } from './render.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,17 +19,7 @@ function getVersion(): string {
   }
 }
 
-/* ---------- tiny terminal helpers ---------- */
-
-const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
-const c = {
-  dim: (s: string) => (useColor ? `\x1b[2m${s}\x1b[0m` : s),
-  bold: (s: string) => (useColor ? `\x1b[1m${s}\x1b[0m` : s),
-  green: (s: string) => (useColor ? `\x1b[32m${s}\x1b[0m` : s),
-  yellow: (s: string) => (useColor ? `\x1b[33m${s}\x1b[0m` : s),
-  red: (s: string) => (useColor ? `\x1b[31m${s}\x1b[0m` : s),
-  cyan: (s: string) => (useColor ? `\x1b[36m${s}\x1b[0m` : s),
-};
+const isTTY = process.stdout.isTTY && !process.env.CI;
 
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length);
@@ -40,72 +30,55 @@ function pad(s: string, n: number): string {
 function cmdList(): void {
   const agents = detectAll();
   if (!agents.length) {
-    console.log(c.yellow('No known AI agents found in PATH.'));
-    console.log(c.dim('Known agents: ' + ['pi', 'claude', 'opencode', 'codex', 'copilot', 'cursor-agent', 'agy'].join(', ')));
+    console.log(color.yellow('No known AI agents found in PATH.'));
+    console.log(
+      color.dim(
+        'Known agents: ' + ['pi', 'claude', 'opencode', 'codex', 'copilot', 'cursor-agent', 'agy'].join(', '),
+      ),
+    );
     return;
   }
 
-  console.log(c.bold(`${agents.length} agent(s) detected:\n`));
-  console.log(c.dim(pad('AGENT', 22) + pad('VERSION', 14) + pad('MANAGER', 14) + 'PATH'));
+  console.log(color.bold(`${agents.length} agent(s) detected:\n`));
+  console.log(color.dim(pad('AGENT', 22) + pad('VERSION', 14) + pad('MANAGER', 14) + 'PATH'));
   for (const a of agents) {
-    const name = a.manager === 'local' ? c.yellow(`${a.def.label} (skip)`) : a.def.label;
+    const name = a.manager === 'local' ? color.yellow(`${a.def.label} (skip)`) : a.def.label;
     const ver = a.version ?? '?';
-    const mgr = a.manager === 'local' ? c.yellow(managerLabel(a.manager)) : c.cyan(managerLabel(a.manager));
-    const path = a.manager === 'local' ? c.dim(a.realPath) : a.realPath;
+    const mgr =
+      a.manager === 'local' ? color.yellow(managerLabel(a.manager)) : color.cyan(managerLabel(a.manager));
+    const path = a.manager === 'local' ? color.dim(a.realPath) : a.realPath;
     console.log(pad(name, 22) + pad(ver, 14) + pad(mgr, 14) + path);
     if (a.manager === 'local') {
-      console.log('  ' + c.yellow(`  ${a.skipReason ?? ''}`));
+      console.log('  ' + color.yellow(`  ${a.skipReason ?? ''}`));
     }
   }
 }
 
-function cmdUpdate(targets: string[]): Promise<void> {
+async function cmdUpdate(targets: string[]): Promise<void> {
   let agents = detectAll();
   if (targets.length) {
     const names = new Set(targets);
     const unknown = targets.filter((t) => !agents.some((a) => a.def.name === t));
     if (unknown.length) {
-      console.log(c.yellow(`not installed: ${unknown.join(', ')}`));
+      console.log(color.yellow(`not installed: ${unknown.join(', ')}`));
     }
     agents = agents.filter((a) => names.has(a.def.name));
     if (!agents.length) {
-      console.log(c.yellow('Nothing to update.'));
-      return Promise.resolve();
+      console.log(color.yellow('Nothing to update.'));
+      return;
     }
   }
-  console.log(c.bold(`Updating ${agents.length} agent(s) concurrently...\n`));
-  return updateAgents(agents).then((results) => {
-    printResults(results);
-  });
-}
 
-function printResults(results: UpdateResult[]): void {
-  for (const r of results) {
-    const name = r.agent.def.label;
-    const from = r.before ?? '?';
-    const to = r.after ?? '?';
-    switch (r.status) {
-      case 'updated':
-        console.log(c.green(`✔ ${name}  ${from} → ${to}`));
-        break;
-      case 'up-to-date':
-        console.log(c.green(`✔ ${name}  up to date (${to})`));
-        break;
-      case 'skipped':
-        console.log(c.yellow(`⏭ ${name}  skipped: ${r.error ?? 'no update command'}`));
-        break;
-      case 'failed':
-        console.log(c.red(`✖ ${name}  failed: ${(r.error ?? 'unknown error').split('\n')[0]}`));
-        if (r.error && r.error.includes('\n')) {
-          console.log(c.dim('  ' + r.error.split('\n').slice(1, 4).join('\n  ')));
-        }
-        break;
-    }
-  }
-  const failed = results.filter((r) => r.status === 'failed').length;
-  const skipped = results.filter((r) => r.status === 'skipped').length;
-  const updated = results.filter((r) => r.status === 'updated').length;
-  console.log(c.bold(`\nDone: ${updated} updated, ${results.length - updated - failed - skipped} up to date, ${skipped} skipped, ${failed} failed.`));
+  console.log(color.bold(`Updating ${agents.length} agent(s) concurrently...\n`));
+  const renderer = createRenderer({ tty: isTTY });
+  agents.forEach((a) => renderer.add(a.def.label));
+
+  await updateAgents(agents, {
+    onProgress: (index, update) => renderer.update(index, update),
+  });
+
+  const summary = renderer.stop();
+  console.log('\n' + summary);
 }
 
 function cmdHelp(): void {
@@ -154,13 +127,13 @@ async function main(): Promise<void> {
       cmdHelp();
       return;
     default:
-      console.log(c.red(`Unknown command: ${args[0]}`));
+      console.log(color.red(`Unknown command: ${args[0]}`));
       cmdHelp();
       process.exitCode = 1;
   }
 }
 
 main().catch((err) => {
-  console.error(c.red(`auway error: ${err instanceof Error ? err.message : String(err)}`));
+  console.error(color.red(`auway error: ${err instanceof Error ? err.message : String(err)}`));
   process.exitCode = 1;
 });

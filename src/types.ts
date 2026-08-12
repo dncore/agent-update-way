@@ -52,3 +52,11 @@ export interface UpdateResult {
   after: string | null;
   error?: string;
 }
+
+/** Progress event emitted as each agent's update progresses. */
+export interface TaskUpdate {
+  state: 'running' | 'success' | 'failed' | 'skipped';
+  before?: string | null;
+  after?: string | null;
+  error?: string;
+}

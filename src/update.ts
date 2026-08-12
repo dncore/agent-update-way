@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import type { ExecFileException } from 'node:child_process';
 import { extractVersion } from './detect.js';
-import type { DetectedAgent, UpdateResult } from './types.js';
+import type { DetectedAgent, TaskUpdate, UpdateResult } from './types.js';
 
 /**
  * Build the update command for an agent based on its install manager.
@@ -70,13 +70,21 @@ function runCommand(cmd: string[], timeoutMs = 300_000): Promise<{ code: number;
   });
 }
 
+export interface UpdateOptions {
+  /** Called with the agent index whenever its progress changes (running → terminal state). */
+  onProgress?: (index: number, update: TaskUpdate) => void;
+  /** Override version re-check after update (mostly for tests). */
+  getVersion?: (a: DetectedAgent) => Promise<string | null>;
+}
+
 /**
  * Update agents concurrently. Each agent's update is independent; failures in
- * one do not block others.
+ * one do not block others. Progress is streamed via `onProgress` so renderers
+ * can paint live per-task status.
  */
-export async function updateAgents(
-  agents: DetectedAgent[],
-  getVersion: (a: DetectedAgent) => Promise<string | null> = async (a) => {
+export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions = {}): Promise<UpdateResult[]> {
+  const { onProgress, getVersion } = opts;
+  const getVersionAfter = getVersion ?? (async (a: DetectedAgent) => {
     // re-run version command after update
     const [bin, ...rest] = a.def.versionCmd;
     if (!bin) return null;
@@ -90,46 +98,36 @@ export async function updateAgents(
     } catch {
       return null;
     }
-  },
-): Promise<UpdateResult[]> {
+  });
+
   const results = await Promise.all(
-    agents.map(async (agent): Promise<UpdateResult> => {
+    agents.map(async (agent, index): Promise<UpdateResult> => {
       const before = agent.version;
       const cmd = buildUpdateCommand(agent);
 
+      const fail = (status: 'failed' | 'skipped', error: string): UpdateResult => {
+        onProgress?.(index, { state: status, before, after: before, error });
+        return { agent, status, before, after: before, error };
+      };
+
       if (agent.manager === 'local') {
-        return {
-          agent,
-          status: 'skipped',
-          before,
-          after: before,
-          error: agent.skipReason ?? 'project-local install',
-        };
+        return fail('skipped', agent.skipReason ?? 'project-local install');
       }
       if (!cmd) {
-        return {
-          agent,
-          status: 'skipped',
-          before,
-          after: before,
-          error: agent.skipReason ?? 'no update command available',
-        };
+        return fail('skipped', agent.skipReason ?? 'no update command available');
       }
 
+      onProgress?.(index, { state: 'running', before });
       const { code, output } = await runCommand(cmd);
       if (code !== 0) {
-        return {
-          agent,
-          status: 'failed',
-          before,
-          after: before,
-          error: output.split('\n').slice(0, 8).join('\n') || `exit code ${code}`,
-        };
+        return fail('failed', output.split('\n').slice(0, 8).join('\n') || `exit code ${code}`);
       }
 
-      const after = await getVersion(agent);
+      const after = await getVersionAfter(agent);
       const changed = after !== null && before !== after;
-      return { agent, status: changed ? 'updated' : 'up-to-date', before, after };
+      const status = changed ? 'updated' : 'up-to-date';
+      onProgress?.(index, { state: 'success', before, after });
+      return { agent, status, before, after };
     }),
   );
   return results;
