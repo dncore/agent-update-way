@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { homedir } from 'node:os';
 import {
   classifyManager,
   extractVersion,
@@ -126,6 +127,12 @@ describe('classifyManager', () => {
     expect(classifyManager('/Users/x/.local/share/pnpm/global/5/node_modules/opencode-ai/bin/opencode').manager).toBe('pnpm');
     expect(classifyManager('/Users/x/.bun/install/global/node_modules/opencode-ai/bin/opencode').manager).toBe('bun');
   });
+
+  it('classifies user-level installs under ~/node_modules', () => {
+    const r = classifyManager('/Users/x/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js', '/Users/x');
+    expect(r.manager).toBe('user');
+    expect(r.target).toBe('@oh-my-pi/pi-coding-agent');
+  });
 });
 
 describe('buildUpdateCommand', () => {
@@ -162,6 +169,17 @@ describe('buildUpdateCommand', () => {
 
   it('project-local → null (never update)', () => {
     const a = mkAgent({ manager: 'local' });
+    expect(buildUpdateCommand(a)).toBeNull();
+  });
+
+  it('user-level → null (skip with hint, avoid churning ~/package.json tree)', () => {
+    const a = mkAgent({
+      def: findAgent('omp')!,
+      manager: 'user',
+      managerTarget: '@oh-my-pi/pi-coding-agent',
+      binPath: `${homedir()}/.bun/bin/omp`,
+      realPath: `${homedir()}/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js`,
+    });
     expect(buildUpdateCommand(a)).toBeNull();
   });
 });

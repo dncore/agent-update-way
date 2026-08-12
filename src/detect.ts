@@ -111,13 +111,18 @@ export function packageNameFromPath(realPath: string): string | null {
  * happens when `npx auway` runs inside a project that depends on pi/claude
  * locally — the real path resolves to node_modules/<pkg>, not .bin/).
  */
-export function classifyManager(realPath: string): {
+export function classifyManager(realPath: string, home: string = homedir()): {
   manager: InstallManager;
   target?: string;
   nodeRoot?: string;
   brewCask?: boolean;
 } {
   if (realPath.includes('/node_modules/')) {
+    // user-level install: <home>/node_modules/<pkg> (npm install --prefix ~)
+    const homeNodeModules = join(home, 'node_modules');
+    if (realPath.startsWith(homeNodeModules + '/')) {
+      return { manager: 'user', target: packageNameFromPath(realPath) ?? undefined };
+    }
     // global npm store: <nodeRoot>/lib/node_modules/<pkg> (fnm/nvm/system)
     const npmIdx = realPath.indexOf(MARKERS.npmGlobal);
     if (npmIdx !== -1) {
@@ -236,6 +241,9 @@ export async function detectAllAsync(): Promise<DetectedAgent[]> {
     if (manager === 'local') {
       agent.skipReason =
         'project-local dependency (under node_modules) - not a global install, skipping';
+    } else if (manager === 'user') {
+      agent.skipReason =
+        'user-level install under ~/node_modules - update manually (e.g. bun add -g <pkg> or npm update --prefix ~ <pkg>)';
     } else if (manager === 'native' && !f.def.nativeUpdate.length) {
       agent.skipReason = `no known update command for native install of ${f.def.label}`;
     }
@@ -281,6 +289,9 @@ export function detectAll(): DetectedAgent[] {
     if (manager === 'local') {
       agent.skipReason =
         'project-local dependency (under node_modules) - not a global install, skipping';
+    } else if (manager === 'user') {
+      agent.skipReason =
+        'user-level install under ~/node_modules - update manually (e.g. bun add -g <pkg> or npm update --prefix ~ <pkg>)';
     } else if (manager === 'native' && !def.nativeUpdate.length) {
       agent.skipReason = `no known update command for native install of ${def.label}`;
     }
@@ -300,6 +311,8 @@ export function managerLabel(m: InstallManager): string {
       return 'bun global';
     case 'brew':
       return 'homebrew';
+    case 'user':
+      return 'user-level (~/node_modules)';
     case 'native':
       return 'native';
     case 'local':

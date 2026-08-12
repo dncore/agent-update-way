@@ -16,7 +16,7 @@ import type { DetectedAgent, TaskUpdate, UpdateResult } from './types.js';
  *   project-local        →  skipped, never touched
  */
 export function buildUpdateCommand(agent: DetectedAgent): string[] | null {
-  const { def, manager, managerTarget, nodeRoot, brewCask } = agent;
+  const { def, manager, managerTarget, nodeRoot, brewCask, binPath } = agent;
   switch (manager) {
     case 'npm': {
       const pkg = managerTarget ?? def.npmPackage;
@@ -39,6 +39,12 @@ export function buildUpdateCommand(agent: DetectedAgent): string[] | null {
       if (!formula) return null;
       return brewCask ? ['brew', 'upgrade', '--cask', formula] : ['brew', 'upgrade', formula];
     }
+    case 'user':
+      // User-level install under ~/node_modules (npm install --prefix ~).
+      // Updating it safely requires the tool that created it — both
+      // `npm --prefix ~` and `bun add -g` re-resolve the whole ~/package.json
+      // dependency tree (slow, churns unrelated user tools). Skip with a hint.
+      return null;
     case 'native':
       return def.nativeUpdate.length ? [...def.nativeUpdate] : null;
     case 'local':

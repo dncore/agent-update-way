@@ -4,6 +4,7 @@ export type InstallManager =
   | 'pnpm' // pnpm global store
   | 'bun' // bun global
   | 'brew' // Homebrew formula
+  | 'user' // user-level install under ~/node_modules (npm --prefix ~)
   | 'native' // official installer / standalone binary (claude native, opencode binary, ...)
   | 'local'; // project-local dependency (node_modules/.bin) - never touch these
 
