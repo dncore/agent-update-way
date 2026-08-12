@@ -47,8 +47,13 @@ npm install -g agent-update-way
 Or run without installing:
 
 ```bash
-npx --yes agent-update-way
+npx --yes agent-update-way@latest
 ```
+
+> Note: `npx` caches whatever version it downloaded once and will not re-check
+> for `latest` until the cache entry is stale. Use the explicit `@latest` tag
+> (or clear `~/.npm/_npx/*/node_modules/agent-update-way`) to pick up new
+> releases.
 
 ## Usage
 
