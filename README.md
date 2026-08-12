@@ -1,10 +1,12 @@
-# auway (agent-update-way)
+# auway
 
 One command to **detect and update all your AI coding agents** — with install-manager awareness.
 
 ```bash
-npx agent-update-way        # or: auway
+npx auway
 ```
+
+> The npm package is `auway`; this repository is named `agent-update-way`.
 
 | Agent | Install detected via | Update via |
 |---|---|---|
@@ -52,18 +54,18 @@ project-local node_modules  →  never touched (skipped with a warning)
 ## Install
 
 ```bash
-npm install -g agent-update-way
+npm install -g auway
 ```
 
 Or run without installing:
 
 ```bash
-npx --yes agent-update-way@latest
+npx --yes auway@latest
 ```
 
 > Note: `npx` caches whatever version it downloaded once and will not re-check
 > for `latest` until the cache entry is stale. Use the explicit `@latest` tag
-> (or clear `~/.npm/_npx/*/node_modules/agent-update-way`) to pick up new
+> (or clear `~/.npm/_npx/*/node_modules/auway`) to pick up new
 > releases.
 
 ## Usage
@@ -91,7 +93,7 @@ GitHub Copilot CLI    1.0.79        homebrew      /opt/homebrew/Caskroom/copilot
 
 $ auway
 Updating 5 agent(s) concurrently...
-
+[█████████████████████████] 100% (5/5)  done
 ✔ Claude Code  up to date (2.1.228)
 ✔ Pi Coding Agent  up to date (0.84.1)
 ✔ OpenCode  up to date (1.18.16)

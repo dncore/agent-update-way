@@ -1,6 +1,6 @@
 {
-  "name": "agent-update-way",
-  "version": "0.1.9",
+  "name": "auway",
+  "version": "0.2.0",
   "description": "One command to detect and update all your AI coding agents (pi, Claude Code, OpenCode, Codex, Copilot CLI...) with install-manager awareness",
   "type": "module",
   "bin": {
@@ -32,6 +32,10 @@
     "copilot"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dncore/agent-update-way.git"
+  },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "tsup": "^8.5.0",

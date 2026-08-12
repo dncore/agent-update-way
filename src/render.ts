@@ -59,101 +59,39 @@ export function createSpinner(text: string): {
   };
 }
 
-/* ---------- internal task state ---------- */
-
-export interface RenderTask {
-  label: string;
-  state: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
-  before: string | null;
-  after: string | null;
-  error?: string;
-  /** ms since the task started running (for elapsed display). */
-  elapsedMs?: number;
-  /** wall-clock when the task started running. */
-  startedAt?: number;
-}
-
-/** Format ms as a compact duration, e.g. 12.3s / 1m05s. */
-export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.max(0, Math.round(ms / 100)) / 10}s`;
-  if (ms < 60_000) return `${Math.round(ms / 100) / 10}s`;
-  const total = Math.round(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}m${String(s).padStart(2, '0')}s`;
-}
-
-function taskLines(t: RenderTask, frame: string): string[] {
-  const dur =
-    t.elapsedMs !== undefined && t.elapsedMs > 0 ? color.dim(`  ${formatDuration(t.elapsedMs)}`) : '';
-  switch (t.state) {
-    case 'pending':
-      return [color.dim(`${frame} ${t.label}`)];
-    case 'running':
-      return [color.cyan(`${frame} ${t.label}`) + dur];
-    case 'success': {
-      const changed = t.before !== null && t.after !== null && t.before !== t.after;
-      const suffix = changed ? `${t.before} → ${t.after}` : `up to date (${t.after ?? t.before ?? '?'})`;
-      return [color.green(`✔ ${t.label}  ${suffix}`) + dur];
-    }
-    case 'skipped': {
-      // Multi-line reasons (e.g. user-level installs) expand below the line.
-      const skipLines = (t.error ?? 'no update command').split('\n');
-      const out = [color.yellow(`⏭ ${t.label}  skipped: ${skipLines[0] ?? ''}`)];
-      for (const extra of skipLines.slice(1)) {
-        out.push(color.dim('  ' + extra.trimStart()));
-      }
-      return out;
-    }
-    case 'failed': {
-      const errLines = (t.error ?? 'unknown error').split('\n');
-      const out = [color.red(`✖ ${t.label}  failed: ${errLines[0] ?? ''}`) + dur];
-      for (const extra of errLines.slice(1, 4)) {
-        out.push(color.dim('  ' + extra.trimStart()));
-      }
-      return out;
-    }
-  }
-}
-
-/** Build the display lines for the whole panel, including the sticky footer. */
-export function buildPanelLines(tasks: RenderTask[], frame: string): string[] {
-  const taskLinesOut = tasks.flatMap((t) => taskLines(t, frame));
-
-  const running = tasks.filter((t) => t.state === 'running').length;
-  const pending = tasks.filter((t) => t.state === 'pending').length;
-  const updated = tasks.filter(
-    (t) => t.state === 'success' && t.before !== null && t.after !== null && t.before !== t.after,
-  ).length;
-  const upToDate = tasks.filter((t) => t.state === 'success').length - updated;
-  const skipped = tasks.filter((t) => t.state === 'skipped').length;
-  const failed = tasks.filter((t) => t.state === 'failed').length;
-
-  const anyRunning = running + pending > 0;
-  if (!anyRunning) return taskLinesOut; // all terminal: no footer needed
-
-  const parts: string[] = [];
-  if (running > 0) parts.push(color.cyan(`${frame} ${running} running`));
-  if (pending > 0) parts.push(color.dim(`${pending} queued`));
-  if (updated > 0) parts.push(color.green(`✔ ${updated}`));
-  if (upToDate > 0) parts.push(color.green(`✔ ${upToDate} up to date`));
-  if (skipped > 0) parts.push(color.yellow(`⏭ ${skipped}`));
-  if (failed > 0) parts.push(color.red(`✖ ${failed}`));
-  const line = '  ' + parts.join(' · ');
-  return [...taskLinesOut, line];
-}
+/* ---------- progress bar ---------- */
 
 /** Compute the summary line printed once everything is done. */
-export function summaryLine(tasks: RenderTask[]): string {
-  const updated = tasks.filter(
-    (t) => t.state === 'success' && t.before !== null && t.after !== null && t.before !== t.after,
-  ).length;
-  const upToDate = tasks.filter((t) => t.state === 'success').length - updated;
-  const skipped = tasks.filter((t) => t.state === 'skipped').length;
-  const failed = tasks.filter((t) => t.state === 'failed').length;
+export function summaryLine(
+  updated: number,
+  upToDate: number,
+  skipped: number,
+  failed: number,
+): string {
   return color.bold(
     `Done: ${updated} updated, ${upToDate} up to date, ${skipped} skipped, ${failed} failed.`,
   );
+}
+
+const BAR_WIDTH = 25;
+const BAR_FILLED = '█';
+const BAR_EMPTY = '░';
+
+function drawBar(done: number, total: number, running: number, frame: string, started: boolean): string {
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const filled = total > 0 ? Math.round((done / total) * BAR_WIDTH) : 0;
+  const bar = BAR_FILLED.repeat(filled) + BAR_EMPTY.repeat(BAR_WIDTH - filled);
+
+  let status: string;
+  if (!started) {
+    status = '  ' + color.dim('...');
+  } else if (running > 0) {
+    status = '  ' + color.cyan(frame + ' ' + running + ' running');
+  } else {
+    status = '  ' + color.green('done');
+  }
+
+  return `[${bar}] ${pct}% (${done}/${total})${status}`;
 }
 
 /* ---------- renderer ---------- */
@@ -163,26 +101,40 @@ export interface Renderer {
   add(label: string): number;
   /** Update a task's state and repaint. */
   update(index: number, u: TaskUpdate): void;
-  /** Finish: stop animation, restore cursor, return summary line. */
+  /** Finish: stop animation, return summary line. */
   stop(): string;
 }
 
 /**
- * Modern multi-task progress panel (turborepo / pnpm style):
- * every concurrent task gets its own live-updating line with elapsed time,
- * and a sticky summary footer shows the overall progress while any task runs.
+ * Progress bar for the concurrent update phase.
  *
- * - TTY: repaints a fixed panel using ANSI cursor movement + spinner frames.
- *   Cursor discipline: after each paint the cursor sits BELOW the panel, so
- *   the next paint moves up exactly `drawn` lines and rewrites in place.
- * - non-TTY: prints each task's result as it completes (no animation).
+ * - TTY: a single-line progress bar re-renders in place via \\r,
+ *   with a spinner frame when tasks are running. Completed
+ *   / failed / skipped task results stack above the bar as they
+ *   finish (homebrew style).
+ * - non-TTY: prints each result as it completes; prints the bar
+ *   on each percentage change so the user sees progress without
+ *   spam.
  */
 export function createRenderer(opts: { tty: boolean; onLine?: (line: string) => void }): Renderer {
   const { tty, onLine } = opts;
-  const tasks: RenderTask[] = [];
+  const labels: string[] = [];
+  const resultLines: string[] = []; // completed / failed / skipped results, in order
+
+  let total = 0;
+  let done = 0; // completed + failed + skipped (for bar percentage)
+  let running = 0;
+  let updated = 0;
+  let upToDate = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  let lastPct = -1; // track non-TTY bar printing
+  let started = false;
+
   let frameIndex = 0;
   let timer: ReturnType<typeof setInterval> | null = null;
-  let drawn = 0; // how many lines we currently occupy on screen
+  let drawn = 0;
   let stopped = false;
 
   const emit = (line: string) => {
@@ -192,20 +144,20 @@ export function createRenderer(opts: { tty: boolean; onLine?: (line: string) => 
 
   const paint = () => {
     if (!tty || stopped) return;
-    const lines = buildPanelLines(tasks, SPINNER_FRAMES[frameIndex % SPINNER_FRAMES.length] ?? ' ');
 
-    // Move the cursor up to the top of the panel we drew last time.
+    const frame = SPINNER_FRAMES[frameIndex % SPINNER_FRAMES.length] ?? ' ';
+    const bar = drawBar(done, total, running, frame, started);
+    const lines = [...resultLines, bar];
+
     if (drawn > 0) process.stdout.write(`\x1b[${drawn}A`);
     process.stdout.write('\x1b[?25l');
     for (const line of lines) {
       process.stdout.write('\r\x1b[2K' + line + '\n');
     }
-    // Clear any stale trailing lines from a previous, longer paint.
     for (let i = lines.length; i < drawn; i++) {
       process.stdout.write('\r\x1b[2K\n');
     }
     drawn = lines.length;
-    // Cursor now sits below the panel; leave it there for the next paint.
     process.stdout.write('\x1b[?25h');
   };
 
@@ -213,54 +165,83 @@ export function createRenderer(opts: { tty: boolean; onLine?: (line: string) => 
     if (!tty || timer) return;
     timer = setInterval(() => {
       frameIndex++;
-      // refresh elapsed times for running tasks
-      const now = Date.now();
-      for (const t of tasks) {
-        if (t.state === 'running' && t.startedAt !== undefined) t.elapsedMs = now - t.startedAt;
-      }
       paint();
     }, 100);
   };
 
+  const checkDone = () => {
+    if (running <= 0 && total > 0 && done >= total) {
+      stopTimer();
+      if (tty) paint();
+    }
+  };
+
   return {
     add(label: string): number {
-      const index = tasks.length;
-      tasks.push({ label, state: 'pending', before: null, after: null, elapsedMs: 0 });
-      paint();
+      const index = total;
+      labels.push(label);
+      total++;
+      // Don't paint here — wait for the first update({state:'running'})
+      // so the initial bar shows the correct total at once.
       return index;
     },
     update(index: number, u: TaskUpdate): void {
-      const t = tasks[index];
-      if (!t) return;
       if (u.state === 'running') {
-        t.state = 'running';
-        t.elapsedMs = 0;
-        t.startedAt = Date.now();
+        started = true;
+        running++;
         startTimer();
         paint();
         return;
       }
-      t.state = u.state;
-      t.before = u.before ?? t.before;
-      t.after = u.after ?? t.after;
-      t.error = u.error;
-      t.elapsedMs = t.startedAt !== undefined ? Date.now() - t.startedAt : 0;
+
+      running = Math.max(0, running - 1);
+      done++;
+      const label = labels[index] ?? '?';
+
+      let line: string;
+      switch (u.state) {
+        case 'success': {
+          const changed = u.before !== null && u.after !== null && u.before !== u.after;
+          const suffix = changed
+            ? `${u.before} → ${u.after}`
+            : `up to date (${u.after ?? u.before ?? '?'})`;
+          line = color.green(`✔ ${label}  ${suffix}`);
+          if (changed) updated++;
+          else upToDate++;
+          break;
+        }
+        case 'skipped': {
+          line = color.yellow(`⏭ ${label}  skipped: ${(u.error ?? 'no update command').split('\n')[0] ?? ''}`);
+          skipped++;
+          break;
+        }
+        case 'failed': {
+          line = color.red(`✖ ${label}  failed: ${(u.error ?? 'unknown').split('\n')[0] ?? ''}`);
+          failed++;
+          break;
+        }
+      }
+
+      resultLines.push(line);
+
       if (tty) {
         paint();
       } else {
-        // non-TTY: print the final line for this task immediately
-        for (const line of taskLines(t, ' ')) emit(line);
+        emit(line);
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        if (pct !== lastPct) {
+          const frame = SPINNER_FRAMES[frameIndex % SPINNER_FRAMES.length] ?? ' ';
+          emit(drawBar(done, total, running, frame, started));
+          lastPct = pct;
+        }
       }
-      // if all tasks are terminal, stop the spinner
-      if (tasks.every((x) => x.state !== 'pending' && x.state !== 'running')) {
-        stopTimer();
-      }
+
+      checkDone();
     },
     stop(): string {
       stopped = true;
       stopTimer();
-      // Cursor already sits below the panel; nothing to clean up.
-      return summaryLine(tasks);
+      return summaryLine(updated, upToDate, skipped, failed);
     },
   };
 
