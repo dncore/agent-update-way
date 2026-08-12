@@ -14,6 +14,51 @@ export const color = {
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/**
+ * Single-line spinner for short phases (e.g. detection) before the main panel.
+ * TTY: animated inline; non-TTY: static "..." line.
+ */
+export function createSpinner(text: string): {
+  /** Replace the spinner line with a final status (or clear it). */
+  done(finalText?: string): void;
+} {
+  const tty = process.stdout.isTTY && !process.env.NO_COLOR && !process.env.CI;
+  let frame = 0;
+  let timer: ReturnType<typeof setInterval> | null = null;
+
+  const render = () => {
+    process.stdout.write(
+      `\r\x1b[2K${color.cyan((SPINNER_FRAMES[frame % SPINNER_FRAMES.length] ?? ' ') + ' ' + text)}`,
+    );
+  };
+  const renderStatic = () => {
+    process.stdout.write(`${text}...`);
+  };
+
+  if (tty) {
+    render();
+    timer = setInterval(() => {
+      frame++;
+      render();
+    }, 80);
+  } else {
+    renderStatic();
+  }
+
+  return {
+    done(finalText?: string) {
+      if (timer) clearInterval(timer);
+      if (tty) {
+        process.stdout.write(
+          `\r\x1b[2K${finalText ? color.green(`✔ ${finalText}`) : ''}\n`,
+        );
+      } else {
+        process.stdout.write(finalText ? ` ✔ ${finalText}\n` : '\n');
+      }
+    },
+  };
+}
+
 /* ---------- internal task state ---------- */
 
 export interface RenderTask {

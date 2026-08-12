@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { detectAll, managerLabel } from './detect.js';
+import { detectAllAsync, managerLabel } from './detect.js';
 import { updateAgents } from './update.js';
-import { createRenderer, color } from './render.js';
+import { createRenderer, createSpinner, color } from './render.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,34 +28,40 @@ function pad(s: string, n: number): string {
 /* ---------- commands ---------- */
 
 function cmdList(): void {
-  const agents = detectAll();
-  if (!agents.length) {
-    console.log(color.yellow('No known AI agents found in PATH.'));
-    console.log(
-      color.dim(
-        'Known agents: ' + ['pi', 'claude', 'opencode', 'codex', 'copilot', 'cursor-agent', 'agy'].join(', '),
-      ),
-    );
-    return;
-  }
-
-  console.log(color.bold(`${agents.length} agent(s) detected:\n`));
-  console.log(color.dim(pad('AGENT', 22) + pad('VERSION', 14) + pad('MANAGER', 14) + 'PATH'));
-  for (const a of agents) {
-    const name = a.manager === 'local' ? color.yellow(`${a.def.label} (skip)`) : a.def.label;
-    const ver = a.version ?? '?';
-    const mgr =
-      a.manager === 'local' ? color.yellow(managerLabel(a.manager)) : color.cyan(managerLabel(a.manager));
-    const path = a.manager === 'local' ? color.dim(a.realPath) : a.realPath;
-    console.log(pad(name, 22) + pad(ver, 14) + pad(mgr, 14) + path);
-    if (a.manager === 'local') {
-      console.log('  ' + color.yellow(`  ${a.skipReason ?? ''}`));
+  const spinner = createSpinner('Detecting AI agents');
+  void detectAllAsync().then((agents) => {
+    spinner.done(`Detected ${agents.length} agent(s)`);
+    if (!agents.length) {
+      console.log(color.yellow('No known AI agents found in PATH.'));
+      console.log(
+        color.dim(
+          'Known agents: ' + ['pi', 'claude', 'opencode', 'codex', 'copilot', 'cursor-agent', 'agy'].join(', '),
+        ),
+      );
+      return;
     }
-  }
+
+    console.log(color.bold(`${agents.length} agent(s) detected:\n`));
+    console.log(color.dim(pad('AGENT', 22) + pad('VERSION', 14) + pad('MANAGER', 14) + 'PATH'));
+    for (const a of agents) {
+      const name = a.manager === 'local' ? color.yellow(`${a.def.label} (skip)`) : a.def.label;
+      const ver = a.version ?? '?';
+      const mgr =
+        a.manager === 'local' ? color.yellow(managerLabel(a.manager)) : color.cyan(managerLabel(a.manager));
+      const path = a.manager === 'local' ? color.dim(a.realPath) : a.realPath;
+      console.log(pad(name, 22) + pad(ver, 14) + pad(mgr, 14) + path);
+      if (a.manager === 'local') {
+        console.log('  ' + color.yellow(`  ${a.skipReason ?? ''}`));
+      }
+    }
+  });
 }
 
 async function cmdUpdate(targets: string[]): Promise<void> {
-  let agents = detectAll();
+  const spinner = createSpinner('Detecting AI agents');
+  const t0 = Date.now();
+  let agents = await detectAllAsync();
+  spinner.done(`Detected ${agents.length} agent(s) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   if (targets.length) {
     const names = new Set(targets);
     const unknown = targets.filter((t) => !agents.some((a) => a.def.name === t));
