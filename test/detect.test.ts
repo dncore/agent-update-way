@@ -103,6 +103,29 @@ describe('classifyManager', () => {
     const r = classifyManager('/Users/x/proj/node_modules/.bin/pi');
     expect(r.manager).toBe('local');
   });
+
+  it('classifies project-local installs by real path (the npx case)', () => {
+    // npx prepends <proj>/node_modules/.bin to PATH; realpath resolves the
+    // symlink to node_modules/<pkg>/... — which is NOT a global store.
+    const r = classifyManager(
+      '/Users/x/proj/node_modules/@earendil-works/pi-coding-agent/dist/cli.js',
+    );
+    expect(r.manager).toBe('local');
+  });
+
+  it('distinguishes project-local from global npm store (lib/node_modules)', () => {
+    const global = classifyManager(
+      '/Users/x/.local/share/fnm/node-versions/v24.13.0/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js',
+    );
+    expect(global.manager).toBe('npm');
+    const local = classifyManager('/Users/x/proj/node_modules/@earendil-works/pi-coding-agent/dist/cli.js');
+    expect(local.manager).toBe('local');
+  });
+
+  it('classifies pnpm and bun global stores', () => {
+    expect(classifyManager('/Users/x/.local/share/pnpm/global/5/node_modules/opencode-ai/bin/opencode').manager).toBe('pnpm');
+    expect(classifyManager('/Users/x/.bun/install/global/node_modules/opencode-ai/bin/opencode').manager).toBe('bun');
+  });
 });
 
 describe('buildUpdateCommand', () => {

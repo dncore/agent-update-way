@@ -7,11 +7,10 @@ import type { AgentDef, DetectedAgent, InstallManager } from './types.js';
 
 /** Path markers used to classify where a binary lives. */
 const MARKERS = {
-  // project-local dependency (must never auto-update)
-  nodeModulesBin: '/node_modules/.bin/',
   // npm global install roots: <nodeRoot>/lib/node_modules/<pkg> (any node version, incl. fnm/nvm)
   npmGlobal: '/lib/node_modules/',
-  pnpmGlobal: '/global/5/', // pnpm global store lives under ~/.local/share/pnpm/global/5/
+  pnpmGlobal: '/global/5/', // pnpm global store: ~/.local/share/pnpm/global/5/node_modules
+  bunGlobal: '/.bun/install/global/', // bun global: ~/.bun/install/global/node_modules
   bunBin: '/.bun/bin/',
   // homebrew
   brewBin: '/opt/homebrew/bin/',
@@ -103,30 +102,43 @@ export function packageNameFromPath(realPath: string): string | null {
   return first;
 }
 
-/** Classify the install manager based on the real path. */
+/**
+ * Classify the install manager based on the real path.
+ *
+ * All `/node_modules/` paths are handled here: global stores (npm/pnpm/bun)
+ * are updated via their manager; everything else under node_modules is a
+ * project-local dependency and must never be auto-updated (this is what
+ * happens when `npx auway` runs inside a project that depends on pi/claude
+ * locally — the real path resolves to node_modules/<pkg>, not .bin/).
+ */
 export function classifyManager(realPath: string): {
   manager: InstallManager;
   target?: string;
   nodeRoot?: string;
   brewCask?: boolean;
 } {
-  // project-local: never auto-update
-  if (realPath.includes(MARKERS.nodeModulesBin)) {
+  if (realPath.includes('/node_modules/')) {
+    // global npm store: <nodeRoot>/lib/node_modules/<pkg> (fnm/nvm/system)
+    const npmIdx = realPath.indexOf(MARKERS.npmGlobal);
+    if (npmIdx !== -1) {
+      const nodeRoot = realPath.slice(0, npmIdx);
+      const pkg = packageNameFromPath(realPath);
+      if (nodeRoot && pkg) {
+        return { manager: 'npm', target: pkg, nodeRoot };
+      }
+    }
+    // pnpm global store
+    if (realPath.includes(MARKERS.pnpmGlobal)) {
+      return { manager: 'pnpm', target: packageNameFromPath(realPath) ?? undefined };
+    }
+    // bun global store
+    if (realPath.includes(MARKERS.bunGlobal)) {
+      return { manager: 'bun', target: packageNameFromPath(realPath) ?? undefined };
+    }
+    // anything else under node_modules → project-local dependency
     return { manager: 'local' };
   }
-  // npm global store under any node root (fnm/nvm/system): <nodeRoot>/lib/node_modules/<pkg>
-  if (realPath.includes(MARKERS.npmGlobal)) {
-    const nodeRoot = nodeRootFromPath(realPath);
-    const pkg = packageNameFromPath(realPath);
-    if (nodeRoot && pkg) {
-      return { manager: 'npm', target: pkg, nodeRoot };
-    }
-  }
-  // pnpm global store
-  if (realPath.includes(MARKERS.pnpmGlobal)) {
-    return { manager: 'pnpm', target: packageNameFromPath(realPath) ?? undefined };
-  }
-  // bun global
+  // bun bin shim (~/.bun/bin/<cmd>)
   if (realPath.includes(MARKERS.bunBin)) {
     return { manager: 'bun', target: packageNameFromPath(realPath) ?? undefined };
   }
@@ -218,7 +230,7 @@ export function detectAll(): DetectedAgent[] {
 
     if (manager === 'local') {
       agent.skipReason =
-        'project-local dependency (node_modules/.bin) - not a global install, skipping';
+        'project-local dependency (under node_modules) - not a global install, skipping';
     } else if (manager === 'native' && !def.nativeUpdate.length) {
       agent.skipReason = `no known update command for native install of ${def.label}`;
     }
