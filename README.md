@@ -10,6 +10,7 @@ npx agent-update-way        # or: auway
 |---|---|---|
 | Claude Code | `claude` | `claude update` (native) |
 | Pi Coding Agent | `pi` | `npm update -g --prefix <node-root> @earendil-works/pi-coding-agent` |
+| Oh My Pi | `omp` | `omp update` (native) / `bun add -g @oh-my-pi/pi-coding-agent` (bun) |
 | OpenCode | `opencode` | `opencode upgrade` (native) / `brew upgrade opencode` |
 | OpenAI Codex | `codex` | `brew upgrade --cask codex` (brew cask) |
 | GitHub Copilot CLI | `copilot` | `brew upgrade --cask copilot-cli` (brew cask) |
