@@ -172,7 +172,7 @@ describe('buildUpdateCommand', () => {
     expect(buildUpdateCommand(a)).toBeNull();
   });
 
-  it('user-level → null (skip with hint, avoid churning ~/package.json tree)', () => {
+  it('user-level → precise isolated update (handled by updateAgents, not skipped)', () => {
     const a = mkAgent({
       def: findAgent('omp')!,
       manager: 'user',
@@ -180,6 +180,8 @@ describe('buildUpdateCommand', () => {
       binPath: `${homedir()}/.bun/bin/omp`,
       realPath: `${homedir()}/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js`,
     });
+    // buildUpdateCommand has no single-command path for user installs;
+    // updateAgents handles them via the multi-step isolated update instead.
     expect(buildUpdateCommand(a)).toBeNull();
   });
 });

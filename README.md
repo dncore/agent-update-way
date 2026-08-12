@@ -36,8 +36,18 @@ npm global  →  npm update -g --prefix <node-root> <pkg>   (works with fnm/nvm 
 brew cask   →  brew upgrade --cask <formula>
 brew        →  brew upgrade <formula>
 native      →  <agent> update
+user-level  →  precise isolated update of ~/node_modules/<pkg> only
+              (npm view → npm pack → atomic swap → nested deps)
 project-local node_modules  →  never touched (skipped with a warning)
 ```
+
+> User-level installs (created via `npm install --prefix ~`, e.g. an agent
+> linked from `~/.bun/bin`) are updated **precisely**: auway downloads the
+> exact package tarball from the registry, atomically swaps it into
+> `~/node_modules/<pkg>` and installs its dependencies nested inside the
+> package dir. The rest of your `~/node_modules` tree is never touched — a
+> plain `npm install --prefix ~` or `bun add -g` would re-resolve and churn
+> the whole user-level tree (measured: 100+ unrelated packages).
 
 ## Install
 
