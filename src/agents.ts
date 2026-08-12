@@ -25,6 +25,13 @@ export const KNOWN_AGENTS: AgentDef[] = [
     npmPackage: '@earendil-works/pi-coding-agent',
   },
   {
+    name: 'omp',
+    label: 'Oh My Pi',
+    nativeUpdate: ['omp', 'update'],
+    versionCmd: ['omp', '--version'],
+    npmPackage: '@oh-my-pi/pi-coding-agent',
+  },
+  {
     name: 'opencode',
     label: 'OpenCode',
     nativeUpdate: ['opencode', 'upgrade'],
