@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { detectAllAsync, managerLabel } from './detect.js';
 import { updateAgents } from './update.js';
+import { detectPiExtensions, updatePiExtensions, extensionsStatusLine } from './pi-extensions.js';
+import type { PiExtensionsInfo } from './types.js';
 import { createRenderer, createSpinner, color } from './render.js';
+import type { Renderer } from './render.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,36 +28,109 @@ function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length);
 }
 
+/* ---------- pi extensions (list + update helpers) ---------- */
+
+/** Is pi among the detected agents? */
+function piInstalled(agents: { def: { name: string } }[]): boolean {
+  return agents.some((a) => a.def.name === 'pi');
+}
+
+function printPiExtensions(ext: PiExtensionsInfo): void {
+  if (!ext.total) {
+    console.log(color.dim('Pi Extensions: none installed'));
+    return;
+  }
+  console.log(
+    color.bold(
+      `Pi Extensions (${ext.total} package${ext.total === 1 ? '' : 's'}, ` +
+        (ext.outdatedCount
+          ? `${ext.outdatedCount} update${ext.outdatedCount === 1 ? '' : 's'} available):`
+          : 'all up to date):'),
+    ),
+  );
+  for (const p of ext.packages) {
+    let ver: string;
+    let tag: string;
+    if (p.type === 'npm') {
+      ver = p.outdated ? `${p.installed ?? '?'} → ${p.latest ?? '?'}` : (p.installed ?? '?');
+      tag = p.pinned ? color.dim('pinned') : p.outdated ? color.yellow('update') : color.green('ok');
+    } else {
+      ver = p.installed ?? '?';
+      tag = color.dim(p.type === 'git' ? `git${p.pinned ? ' (pinned)' : ''}` : 'local');
+    }
+    console.log(`  ${pad(p.name, 32)} ${pad(ver, 16)}${tag}`);
+  }
+}
+
+/**
+ * Run the aggregate "Pi Extensions" task inside the update panel: detect,
+ * run `pi update --extensions`, re-detect, report. Even when pi itself is up
+ * to date, extensions are checked and updated (git refs are reconciled too).
+ */
+async function runPiExtensionsTask(renderer: Renderer, index: number): Promise<void> {
+  const before = await detectPiExtensions();
+  if (!before.total) {
+    renderer.update(index, {
+      state: 'skipped',
+      before: null,
+      after: null,
+      error: 'no pi extensions installed',
+    });
+    return;
+  }
+  renderer.update(index, { state: 'running', before: extensionsStatusLine(before) });
+  const { code, output } = await updatePiExtensions();
+  if (code !== 0) {
+    renderer.update(index, {
+      state: 'failed',
+      before: extensionsStatusLine(before),
+      after: extensionsStatusLine(before),
+      error: output.split('\n').slice(0, 8).join('\n') || `exit code ${code}`,
+    });
+    return;
+  }
+  const after = await detectPiExtensions();
+  renderer.update(index, {
+    state: 'success',
+    before: extensionsStatusLine(before),
+    after: extensionsStatusLine(after),
+  });
+}
+
 /* ---------- commands ---------- */
 
-function cmdList(): void {
+async function cmdList(): Promise<void> {
   const spinner = createSpinner('Detecting AI agents');
-  void detectAllAsync().then((agents) => {
-    spinner.done(`Detected ${agents.length} agent(s)`);
-    if (!agents.length) {
-      console.log(color.yellow('No known AI agents found in PATH.'));
-      console.log(
-        color.dim(
-          'Known agents: ' + ['pi', 'claude', 'opencode', 'codex', 'copilot', 'cursor-agent', 'agy'].join(', '),
-        ),
-      );
-      return;
-    }
+  const agents = await detectAllAsync();
+  spinner.done(`Detected ${agents.length} agent(s)`);
+  if (!agents.length) {
+    console.log(color.yellow('No known AI agents found in PATH.'));
+    console.log(
+      color.dim(
+        'Known agents: ' + ['pi', 'claude', 'opencode', 'codex', 'copilot', 'cursor-agent', 'agy'].join(', '),
+      ),
+    );
+    return;
+  }
 
-    console.log(color.bold(`${agents.length} agent(s) detected:\n`));
-    console.log(color.dim(pad('AGENT', 22) + pad('VERSION', 14) + pad('MANAGER', 14) + 'PATH'));
-    for (const a of agents) {
-      const name = a.manager === 'local' ? color.yellow(`${a.def.label} (skip)`) : a.def.label;
-      const ver = a.version ?? '?';
-      const mgr =
-        a.manager === 'local' ? color.yellow(managerLabel(a.manager)) : color.cyan(managerLabel(a.manager));
-      const path = a.manager === 'local' ? color.dim(a.realPath) : a.realPath;
-      console.log(pad(name, 22) + pad(ver, 14) + pad(mgr, 14) + path);
-      if (a.manager === 'local') {
-        console.log('  ' + color.yellow(`  ${a.skipReason ?? ''}`));
-      }
+  console.log(color.bold(`${agents.length} agent(s) detected:\n`));
+  console.log(color.dim(pad('AGENT', 22) + pad('VERSION', 14) + pad('MANAGER', 14) + 'PATH'));
+  for (const a of agents) {
+    const name = a.manager === 'local' ? color.yellow(`${a.def.label} (skip)`) : a.def.label;
+    const ver = a.version ?? '?';
+    const mgr =
+      a.manager === 'local' ? color.yellow(managerLabel(a.manager)) : color.cyan(managerLabel(a.manager));
+    const path = a.manager === 'local' ? color.dim(a.realPath) : a.realPath;
+    console.log(pad(name, 22) + pad(ver, 14) + pad(mgr, 14) + path);
+    if (a.manager === 'local') {
+      console.log('  ' + color.yellow(`  ${a.skipReason ?? ''}`));
     }
-  });
+  }
+
+  if (piInstalled(agents)) {
+    console.log('');
+    printPiExtensions(await detectPiExtensions());
+  }
 }
 
 async function cmdUpdate(targets: string[]): Promise<void> {
@@ -75,13 +151,24 @@ async function cmdUpdate(targets: string[]): Promise<void> {
     }
   }
 
-  console.log(color.bold(`Updating ${agents.length} agent(s) concurrently...\n`));
+  // pi extensions are checked & updated alongside pi: always when pi is
+  // installed (even if pi itself is up to date), unless the user scoped the
+  // update to specific agents that exclude pi.
+  const withExtensions = piInstalled(agents) && (targets.length === 0 || targets.includes('pi'));
+  const itemCount = agents.length + (withExtensions ? 1 : 0);
+
+  console.log(color.bold(`Updating ${itemCount} item(s) concurrently...\n`));
   const renderer = createRenderer({ tty: isTTY });
   agents.forEach((a) => renderer.add(a.def.label));
+  let extIndex = -1;
+  if (withExtensions) extIndex = renderer.add('Pi Extensions');
 
-  await updateAgents(agents, {
-    onProgress: (index, update) => renderer.update(index, update),
-  });
+  await Promise.all([
+    updateAgents(agents, {
+      onProgress: (index, update) => renderer.update(index, update),
+    }),
+    withExtensions ? runPiExtensionsTask(renderer, extIndex) : Promise.resolve(),
+  ]);
 
   const summary = renderer.stop();
   console.log('\n' + summary);
@@ -102,6 +189,12 @@ Agents: pi, claude, opencode, codex, copilot, cursor-agent, agy
 auway updates each agent via the install manager that provides it:
   npm global → npm update -g <pkg>   brew → brew upgrade <formula>
   pnpm/bun   → add -g <pkg>          native → <agent> update
+
+Pi Extensions: when pi is installed, auway also detects and updates pi's
+  extension packages (every run, even if pi itself is up to date) via
+  pi update --extensions. Pinned npm versions are skipped, git refs reconciled.
+  Scoped updates like 'auway update claude' leave pi extensions untouched.
+
 Project-local node_modules installs are always skipped.`);
 }
 
@@ -117,7 +210,7 @@ async function main(): Promise<void> {
   switch (args[0]) {
     case 'list':
     case 'ls':
-      cmdList();
+      await cmdList();
       return;
     case 'update':
     case 'up':

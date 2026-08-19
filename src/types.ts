@@ -61,3 +61,37 @@ export interface TaskUpdate {
   after?: string | null;
   error?: string;
 }
+
+/** A pi extension/skill package installed via `pi install` (npm / git / local). */
+export interface PiPackageInfo {
+  /** Original source string from settings, e.g. "npm:pi-subagents" or "git:github.com/user/repo@v1". */
+  source: string;
+  /** Package name (npm) or repo id (git), e.g. "pi-subagents", "gitee.com/Onelap/pi-agent-dispenser". */
+  name: string;
+  type: 'npm' | 'git' | 'local';
+  /** True when the source pins an explicit version/ref (pi skips pinned npm versions on update). */
+  pinned: boolean;
+  /** Installed version (npm) or short HEAD rev (git); null if unknown. */
+  installed: string | null;
+  /** Latest registry version (npm only); null if the check failed or not applicable. */
+  latest: string | null;
+  /** True when an npm update is available (installed < latest, not pinned). */
+  outdated: boolean;
+  /** Install directory on disk. */
+  path: string;
+}
+
+/** Aggregate info about a pi installation's extension packages. */
+export interface PiExtensionsInfo {
+  /** True when settings.json was found and listed at least one package. */
+  enabled: boolean;
+  packages: PiPackageInfo[];
+  total: number;
+  npmCount: number;
+  gitCount: number;
+  /** Names of npm packages that have an available update. */
+  outdated: string[];
+  outdatedCount: number;
+  /** Short human summary, e.g. "8 packages · 2 updates available". */
+  summary: string;
+}

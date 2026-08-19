@@ -18,6 +18,25 @@ npx auway
 | GitHub Copilot CLI | `copilot` | `brew upgrade --cask copilot-cli` (brew cask) |
 | Cursor Agent | `cursor-agent` | `cursor-agent update` |
 | Antigravity CLI | `agy` | `agy update` |
+| Pi Extensions | `~/.pi/agent/settings.json` | `pi update --extensions` (native) |
+
+## Pi Extensions
+
+When pi is installed, auway also **detects and updates pi's extension/skill
+packages on every run — even if pi itself is up to date** (pinned npm versions
+are skipped, git refs are reconciled):
+
+- **Detection** is read-only: it reads the `packages` list from
+  `~/.pi/agent/settings.json` (and project `.pi/settings.json`), reads each
+  installed version from disk, and compares against the npm registry
+  (`npm view <pkg> version`, parallel). Git packages are reported by HEAD rev.
+- **Update** is delegated to pi's native `pi update --extensions`, which
+  manages npm + git packages exactly as pi does (separate module roots,
+  production installs, pinned-version skips, git ref reconciliation).
+- In the update panel extensions appear as a single aggregate task;
+  `auway list` shows each package with its installed/latest version.
+- Scoped updates that exclude pi (`auway update claude`) leave pi extensions
+  untouched.
 
 ## Why not just call `pi update` / `claude update` for everything?
 
@@ -91,16 +110,22 @@ OpenCode              1.18.16       native        /Users/me/.opencode/bin/openco
 OpenAI Codex          0.147.0       homebrew      /opt/homebrew/Caskroom/codex/0.147.0/bin/codex
 GitHub Copilot CLI    1.0.79        homebrew      /opt/homebrew/Caskroom/copilot-cli/1.0.43/copilot
 
+Pi Extensions (8 packages, 1 update available):
+  pi-subagents            0.50.0 → 0.51.0    update
+  @feniix/pi-notion       3.0.2              ok
+  ...
+
 $ auway
-Updating 5 agent(s) concurrently...
-[█████████████████████████] 100% (5/5)  done
+Updating 6 item(s) concurrently...
+[█████████████████████████] 100% (6/6)  done
 ✔ Claude Code  up to date (2.1.228)
 ✔ Pi Coding Agent  up to date (0.84.1)
+✔ Pi Extensions  8 packages · 1 outdated → 8 packages
 ✔ OpenCode  up to date (1.18.16)
 ✔ OpenAI Codex  up to date (0.147.0)
 ✔ GitHub Copilot CLI  up to date (1.0.79)
 
-Done: 0 updated, 5 up to date, 0 skipped, 0 failed.
+Done: 1 updated, 5 up to date, 0 skipped, 0 failed.
 ```
 
 ## Design
@@ -118,6 +143,9 @@ Done: 0 updated, 5 up to date, 0 skipped, 0 failed.
 
 Edit `src/agents.ts` (`KNOWN_AGENTS`) — one entry with the binary name, native update
 command, npm package and/or brew formula. Detection and manager classification are generic.
+
+Pi extension support lives in `src/pi-extensions.ts` (settings parsing, npm
+latest checks, `pi update --extensions` delegation).
 
 ## Development
 
