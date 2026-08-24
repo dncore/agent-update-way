@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,18 @@ import {
   buildPkg,
   detectPiExtensions,
   extensionsStatusLine,
+  createPiSettleGate,
+  updatePiExtensions,
 } from '../src/pi-extensions.js';
+import { runCommand } from '../src/update.js';
+
+// Mock the subprocess runner so updatePiExtensions' ENOENT-retry logic can be
+// exercised without spawning anything. Other exports (compareVersions) stay
+// intact; detectPiExtensions tests inject their own npmView anyway.
+vi.mock('../src/update.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../src/update.js')>();
+  return { ...mod, runCommand: vi.fn() };
+});
 
 function tempHome(packages: string[]): { dir: string; settings: string } {
   const dir = mkdtempSync(join(tmpdir(), 'auway-ext-test-'));
@@ -205,6 +216,109 @@ describe('detectPiExtensions', () => {
     expect(info.total).toBe(0);
     expect(info.summary).toBe('no pi extensions installed');
     cleanup(home);
+  });
+});
+
+describe('createPiSettleGate', () => {
+  it('stays locked on running events, releases on the first terminal event for pi', async () => {
+    const gate = createPiSettleGate(true);
+    let released = false;
+    void gate.settled.then(() => {
+      released = true;
+    });
+    gate.observe(0, 'pi', { state: 'running', before: '0.84.1' });
+    await Promise.resolve();
+    expect(released).toBe(false);
+    gate.observe(0, 'pi', { state: 'success', before: '0.84.2', after: '0.84.2' });
+    await gate.settled;
+    expect(released).toBe(true);
+  });
+
+  it('ignores progress from other agents', async () => {
+    const gate = createPiSettleGate(true);
+    let released = false;
+    void gate.settled.then(() => {
+      released = true;
+    });
+    gate.observe(0, 'claude', { state: 'failed', error: 'boom' });
+    gate.observe(1, 'codex', { state: 'success', before: '1.0', after: '1.1' });
+    await Promise.resolve();
+    expect(released).toBe(false);
+  });
+
+  it('resolves immediately when pi is not installed', async () => {
+    const gate = createPiSettleGate(false);
+    await gate.settled; // must not hang
+    expect(true).toBe(true);
+  });
+
+  it('releases only once; late terminal events are ignored', async () => {
+    const gate = createPiSettleGate(true);
+    gate.observe(0, 'pi', { state: 'skipped', error: 'project-local' });
+    await gate.settled;
+    // a second terminal event after release must be a no-op (no throw)
+    gate.observe(0, 'pi', { state: 'failed', error: 'late' });
+    expect(true).toBe(true);
+  });
+});
+
+describe('updatePiExtensions', () => {
+  beforeEach(() => {
+    vi.mocked(runCommand).mockReset();
+  });
+
+  it('retries on spawn ENOENT until the binary is back', async () => {
+    vi.mocked(runCommand)
+      .mockResolvedValueOnce({
+        code: 1,
+        output: 'spawn pi ENOENT',
+        stdout: '',
+        stderr: 'spawn pi ENOENT',
+        errno: 'ENOENT',
+      })
+      .mockResolvedValueOnce({
+        code: 1,
+        output: 'spawn pi ENOENT',
+        stdout: '',
+        stderr: 'spawn pi ENOENT',
+        errno: 'ENOENT',
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        output: 'all extensions up to date',
+        stdout: 'all extensions up to date',
+        stderr: '',
+      });
+    const r = await updatePiExtensions({ retries: 3, retryDelayMs: 1 });
+    expect(r.code).toBe(0);
+    expect(vi.mocked(runCommand)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(runCommand).mock.calls[0]![0]).toEqual(['pi', 'update', '--extensions']);
+  });
+
+  it('gives up once retries are exhausted', async () => {
+    vi.mocked(runCommand).mockResolvedValue({
+      code: 1,
+      output: 'spawn pi ENOENT',
+      stdout: '',
+      stderr: 'spawn pi ENOENT',
+      errno: 'ENOENT',
+    });
+    const r = await updatePiExtensions({ retries: 2, retryDelayMs: 1 });
+    expect(r.code).toBe(1);
+    expect(r.output).toContain('ENOENT');
+    expect(vi.mocked(runCommand)).toHaveBeenCalledTimes(3); // initial + 2 retries
+  });
+
+  it('does not retry ordinary failures (non-ENOENT)', async () => {
+    vi.mocked(runCommand).mockResolvedValue({
+      code: 5,
+      output: 'boom',
+      stdout: '',
+      stderr: 'boom',
+    });
+    const r = await updatePiExtensions({ retries: 3, retryDelayMs: 1 });
+    expect(r.code).toBe(5);
+    expect(vi.mocked(runCommand)).toHaveBeenCalledTimes(1);
   });
 });
 

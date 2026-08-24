@@ -55,11 +55,26 @@ export function buildUpdateCommand(agent: DetectedAgent): string[] | null {
   }
 }
 
+/** Result of running one command. */
+export interface CommandResult {
+  code: number;
+  output: string;
+  stdout: string;
+  stderr: string;
+  /**
+   * Node spawn error code when the process failed to *launch* (e.g. 'ENOENT'
+   * → the binary is missing). Undefined for normal runs and non-zero exits.
+   * Lets callers distinguish "binary not found" from a real failure, so they
+   * can e.g. retry after a race window.
+   */
+  errno?: string;
+}
+
 /** Run one command, capturing output. Resolves even on non-zero exit. */
 export function runCommand(
   cmd: string[],
   timeoutMs = 300_000,
-): Promise<{ code: number; output: string; stdout: string; stderr: string }> {
+): Promise<CommandResult> {
   const [bin, ...args] = cmd;
   return new Promise((resolve) => {
     if (!bin) {
@@ -71,11 +86,20 @@ export function runCommand(
       args,
       { timeout: timeoutMs, encoding: 'utf8' },
       (error: ExecFileException | null, stdout: string, stderr: string) => {
-        const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+        const joined = [stdout, stderr].filter(Boolean).join('\n').trim();
         if (error) {
-          resolve({ code: typeof error.code === 'number' ? error.code : 1, output, stdout, stderr });
+          // spawn/exec failures (e.g. ENOENT) produce no stdout/stderr; surface
+          // the OS error message so callers and the renderer can show it.
+          const output = joined || error.message.trim();
+          resolve({
+            code: typeof error.code === 'number' ? error.code : 1,
+            output,
+            stdout,
+            stderr,
+            errno: typeof error.code === 'string' ? error.code : undefined,
+          });
         } else {
-          resolve({ code: 0, output, stdout, stderr });
+          resolve({ code: 0, output: joined, stdout, stderr });
         }
       },
     );

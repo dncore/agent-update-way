@@ -35,6 +35,12 @@ are skipped, git refs are reconciled):
   production installs, pinned-version skips, git ref reconciliation).
 - In the update panel extensions appear as a single aggregate task;
   `auway list` shows each package with its installed/latest version.
+- The extensions task is **serialized after pi's own update**: `npm update -g`
+  deletes and re-creates the bin/pi symlink, so spawning `pi` concurrently can
+  hit `spawn pi ENOENT`. auway holds the extensions task until pi's update
+  settles (its terminal event fires only after the post-update `pi --version`
+  re-check), and additionally retries `pi update --extensions` on ENOENT as a
+  safety net against third-party reinstall races.
 - Scoped updates that exclude pi (`auway update claude`) leave pi extensions
   untouched.
 

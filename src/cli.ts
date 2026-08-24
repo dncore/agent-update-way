@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { detectAllAsync, managerLabel } from './detect.js';
 import { updateAgents } from './update.js';
-import { detectPiExtensions, updatePiExtensions, extensionsStatusLine } from './pi-extensions.js';
+import { detectPiExtensions, updatePiExtensions, extensionsStatusLine, createPiSettleGate } from './pi-extensions.js';
 import type { PiExtensionsInfo } from './types.js';
 import { createRenderer, createSpinner, color } from './render.js';
 import type { Renderer } from './render.js';
@@ -163,11 +163,27 @@ async function cmdUpdate(targets: string[]): Promise<void> {
   let extIndex = -1;
   if (withExtensions) extIndex = renderer.add('Pi Extensions');
 
+  // Race fix: "Pi Extensions" spawns `pi update --extensions`, while pi's own
+  // npm task runs `npm update -g` which deletes & re-creates the bin/pi
+  // symlink. Spawning `pi` inside that window fails with ENOENT. The gate
+  // holds the extensions task until pi's own update settles — its terminal
+  // event fires only after the post-update `pi --version` re-check, so the
+  // binary is verifiably back on PATH before we spawn it.
+  const piGate = createPiSettleGate(piInstalled(agents));
+
   await Promise.all([
     updateAgents(agents, {
-      onProgress: (index, update) => renderer.update(index, update),
+      onProgress: (index, update) => {
+        renderer.update(index, update);
+        piGate.observe(index, agents[index]?.def.name, update);
+      },
     }),
-    withExtensions ? runPiExtensionsTask(renderer, extIndex) : Promise.resolve(),
+    withExtensions
+      ? (async () => {
+          await piGate.settled;
+          await runPiExtensionsTask(renderer, extIndex);
+        })()
+      : Promise.resolve(),
   ]);
 
   const summary = renderer.stop();

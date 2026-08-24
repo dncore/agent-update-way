@@ -1,5 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { compareVersions } from '../src/update.js';
+import { compareVersions, runCommand } from '../src/update.js';
+
+describe('runCommand', () => {
+  it('reports errno ENOENT when the binary cannot be spawned', async () => {
+    const r = await runCommand(['auway-test-no-such-binary-xyz']);
+    expect(r.code).toBe(1);
+    expect(r.errno).toBe('ENOENT');
+    expect(r.output).toContain('ENOENT');
+  });
+
+  it('leaves errno undefined for a successful run', async () => {
+    const r = await runCommand(['node', '-e', 'process.exit(0)']);
+    expect(r.code).toBe(0);
+    expect(r.errno).toBeUndefined();
+  });
+});
 
 describe('compareVersions', () => {
   it('compares equal versions', () => {
