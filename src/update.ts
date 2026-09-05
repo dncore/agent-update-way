@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { extractVersion } from './detect.js';
+import { needsShell, shellCommand, resolveBin } from './shell.js';
 import type { DetectedAgent, TaskUpdate, UpdateResult } from './types.js';
 
 /**
@@ -70,7 +71,12 @@ export interface CommandResult {
   errno?: string;
 }
 
-/** Run one command, capturing output. Resolves even on non-zero exit. */
+/** Run one command, capturing output. Resolves even on non-zero exit.
+ *
+ * Windows: commands like `npm`, `pi` (npm shims without a .exe) cannot be
+ * spawned directly — they are routed through the shell so cmd.exe resolves
+ * them via PATHEXT, exactly like a user typing in a terminal.
+ */
 export function runCommand(
   cmd: string[],
   timeoutMs = 300_000,
@@ -81,28 +87,28 @@ export function runCommand(
       resolve({ code: 1, output: 'empty command', stdout: '', stderr: 'empty command' });
       return;
     }
-    execFile(
-      bin,
-      args,
-      { timeout: timeoutMs, encoding: 'utf8' },
-      (error: ExecFileException | null, stdout: string, stderr: string) => {
-        const joined = [stdout, stderr].filter(Boolean).join('\n').trim();
-        if (error) {
-          // spawn/exec failures (e.g. ENOENT) produce no stdout/stderr; surface
-          // the OS error message so callers and the renderer can show it.
-          const output = joined || error.message.trim();
-          resolve({
-            code: typeof error.code === 'number' ? error.code : 1,
-            output,
-            stdout,
-            stderr,
-            errno: typeof error.code === 'string' ? error.code : undefined,
-          });
-        } else {
-          resolve({ code: 0, output: joined, stdout, stderr });
-        }
-      },
-    );
+    const cb = (error: ExecFileException | null, stdout: string, stderr: string) => {
+      const joined = [stdout, stderr].filter(Boolean).join('\n').trim();
+      if (error) {
+        // spawn/exec failures (e.g. ENOENT) produce no stdout/stderr; surface
+        // the OS error message so callers and the renderer can show it.
+        const output = joined || error.message.trim();
+        resolve({
+          code: typeof error.code === 'number' ? error.code : 1,
+          output,
+          stdout,
+          stderr,
+          errno: typeof error.code === 'string' ? error.code : undefined,
+        });
+      } else {
+        resolve({ code: 0, output: joined, stdout, stderr });
+      }
+    };
+    if (needsShell(process.platform, bin)) {
+      execFile(shellCommand(resolveBin(bin), args), [], { timeout: timeoutMs, encoding: 'utf8', shell: true }, cb);
+    } else {
+      execFile(bin, args, { timeout: timeoutMs, encoding: 'utf8' }, cb);
+    }
   });
 }
 
@@ -111,6 +117,8 @@ export interface UpdateOptions {
   onProgress?: (index: number, update: TaskUpdate) => void;
   /** Override version re-check after update (mostly for tests). */
   getVersion?: (a: DetectedAgent) => Promise<string | null>;
+  /** Override the per-command timeout (ms). Default 300_000. */
+  timeoutMs?: number;
 }
 
 /** Compare two dotted version strings; -1/0/1 (semver-style). */
@@ -248,10 +256,16 @@ export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions 
     if (!bin) return null;
     try {
       const { execFileSync } = await import('node:child_process');
-      const raw = execFileSync(bin, rest, {
-        encoding: 'utf8',
-        timeout: 10_000,
-      }).trim();
+      const raw = needsShell(process.platform, bin)
+        ? execFileSync(shellCommand(resolveBin(bin), rest), {
+            encoding: 'utf8',
+            timeout: 10_000,
+            shell: true,
+          }).trim()
+        : execFileSync(bin, rest, {
+            encoding: 'utf8',
+            timeout: 10_000,
+          }).trim();
       return extractVersion(raw);
     } catch {
       return null;
@@ -288,7 +302,7 @@ export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions 
       }
 
       onProgress?.(index, { state: 'running', before });
-      const { code, output } = await runCommand(cmd);
+      const { code, output } = await runCommand(cmd, opts.timeoutMs);
       if (code !== 0) {
         return fail('failed', output.split('\n').slice(0, 8).join('\n') || `exit code ${code}`);
       }

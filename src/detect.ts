@@ -1,8 +1,12 @@
 import { execFileSync, execFile } from 'node:child_process';
-import { existsSync, readlinkSync, realpathSync } from 'node:fs';
+import { existsSync, readlinkSync, realpathSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { KNOWN_AGENTS } from './agents.js';
+import { needsShell, shellCommand, resolveBin, which } from './shell.js';
+
+/** `which`-style lookup honoring PATH, like a shell would. */
+export { which };
 import type { AgentDef, DetectedAgent, InstallManager } from './types.js';
 
 /** Path markers used to classify where a binary lives. */
@@ -26,56 +30,91 @@ function tryRun(cmd: string[], timeoutMs = 15_000): string | null {
   const [bin, ...args] = cmd;
   if (!bin) return null;
   try {
-    return execFileSync(bin, args, {
-      encoding: 'utf8',
-      timeout: timeoutMs,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
+    const out = needsShell(process.platform, bin)
+      ? execFileSync(shellCommand(resolveBin(bin), args), {
+          encoding: 'utf8',
+          timeout: timeoutMs,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: true,
+        })
+      : execFileSync(bin, args, {
+          encoding: 'utf8',
+          timeout: timeoutMs,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+    return out.trim();
   } catch {
     return null;
   }
 }
 
-/** `which`-style lookup honoring PATH, like a shell would. */
-export function which(cmd: string): string | null {
-  const pathEnv = process.env.PATH ?? '';
-  const pathExt =
-    process.platform === 'win32' ? (process.env.PATHEXT ?? '').split(';').filter(Boolean) : [];
-  for (const dir of pathEnv.split(process.platform === 'win32' ? ';' : ':')) {
-    if (!dir) continue;
-    const full = join(dir, cmd);
-    if (existsSync(full)) return full;
-    if (pathExt.length) {
-      for (const ext of pathExt) {
-        const withExt = `${full}${ext}`;
-        if (existsSync(withExt)) return withExt;
-      }
-    }
-  }
-  return null;
-}
-
-/** Resolve a symlink chain to the real file (fall back to input on error). */
+/**
+ * Resolve a bin path to the real file it points at.
+ *
+ * On POSIX, npm global bins are symlinks → realpathSync lands on
+ * <nodeRoot>/lib/node_modules/<pkg>/... . On Windows, npm writes plain shim
+ * scripts (`pi`, `pi.cmd`, `pi.ps1`) instead of symlinks, so realpath keeps
+ * returning the shim itself. Those shims embed the real entry path
+ * (`<binDir>/node_modules/<pkg>/dist/cli.js`), which we parse out so manager
+ * classification sees the actual package location.
+ */
 export function resolveRealPath(p: string): string {
+  let real: string;
   try {
-    return realpathSync(p);
+    real = realpathSync(p);
   } catch {
     // realpathSync already resolves links; fall back to manual single-level resolve
     try {
       const link = readlinkSync(p);
-      return link.startsWith('/') ? link : join(process.cwd(), link);
+      real = link.startsWith('/') ? link : join(process.cwd(), link);
     } catch {
-      return p;
+      real = p;
     }
+  }
+  if (process.platform !== 'win32') return real;
+  // Windows npm shim: plain script, not an .exe — dig the entry path out of it.
+  if (isScriptShim(real)) return npmShimTarget(real) ?? real;
+  return real;
+}
+
+/** True for non-executable script shims (extensionless, .cmd, .ps1, .bat). */
+function isScriptShim(p: string): boolean {
+  if (/\.(exe|com)$/i.test(p)) return false;
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
   }
 }
 
-/** Find the global npm root (`npm root -g`), cached. */
+/** Parse the embedded `.../node_modules/<pkg>/...` entry path out of a shim. */
+export function npmShimTarget(shimPath: string): string | null {
+  try {
+    const text = readFileSync(shimPath, 'utf8').slice(0, 128 * 1024);
+    // npm shims reference the real entry as <binDir>/node_modules/<pkg>/...
+    const m = text.match(/node_modules[\\/][^"'\s]+(?:\.(?:js|cjs|mjs))?/);
+    if (!m) return null;
+    return join(dirname(shimPath), m[0]);
+  } catch {
+    return null;
+  }
+}
+
+/** Find the global npm root (`npm root -g`), cached, normalized to '/' and
+ *  realpath-resolved (so nvm/fnm junction aliases match real paths). */
 let cachedNpmRoot: string | null | undefined;
 export function npmGlobalRoot(): string | null {
   if (cachedNpmRoot !== undefined) return cachedNpmRoot;
   const root = tryRun(['npm', 'root', '-g']);
-  cachedNpmRoot = root && existsSync(root) ? root : null;
+  if (!root || !existsSync(root)) {
+    cachedNpmRoot = null;
+    return null;
+  }
+  try {
+    cachedNpmRoot = realpathSync(root).replace(/\\/g, '/');
+  } catch {
+    cachedNpmRoot = root.replace(/\\/g, '/');
+  }
   return cachedNpmRoot;
 }
 
@@ -110,35 +149,56 @@ export function packageNameFromPath(realPath: string): string | null {
  * project-local dependency and must never be auto-updated (this is what
  * happens when `npx auway` runs inside a project that depends on pi/claude
  * locally — the real path resolves to node_modules/<pkg>, not .bin/).
+ *
+ * On Windows, npm's global store is <nodeRoot>/node_modules/<pkg> (no `lib/`
+ * layer). Since that layout is indistinguishable from a project-local install
+ * by path shape alone, we require the resolved global root (`npm root -g`)
+ * to line up — `globalRoot` can be injected for tests.
  */
-export function classifyManager(realPath: string, home: string = homedir()): {
+export function classifyManager(
+  realPath: string,
+  home: string = homedir(),
+  globalRoot: string | null = npmGlobalRoot(),
+): {
   manager: InstallManager;
   target?: string;
   nodeRoot?: string;
   brewCask?: boolean;
 } {
-  if (realPath.includes('/node_modules/')) {
+  // Windows realpath returns backslash paths; normalize once for markers.
+  const p = realPath.replace(/\\/g, '/');
+  if (p.includes('/node_modules/')) {
     // user-level install: <home>/node_modules/<pkg> (npm install --prefix ~)
-    const homeNodeModules = join(home, 'node_modules');
-    if (realPath.startsWith(homeNodeModules + '/')) {
-      return { manager: 'user', target: packageNameFromPath(realPath) ?? undefined };
+    const homeNodeModules = join(home, 'node_modules').replace(/\\/g, '/');
+    if (p.startsWith(homeNodeModules + '/')) {
+      return { manager: 'user', target: packageNameFromPath(p) ?? undefined };
     }
     // global npm store: <nodeRoot>/lib/node_modules/<pkg> (fnm/nvm/system)
-    const npmIdx = realPath.indexOf(MARKERS.npmGlobal);
+    const npmIdx = p.indexOf(MARKERS.npmGlobal);
     if (npmIdx !== -1) {
-      const nodeRoot = realPath.slice(0, npmIdx);
-      const pkg = packageNameFromPath(realPath);
+      const nodeRoot = p.slice(0, npmIdx);
+      const pkg = packageNameFromPath(p);
+      if (nodeRoot && pkg) {
+        return { manager: 'npm', target: pkg, nodeRoot };
+      }
+    }
+    // Windows npm global store: <nodeRoot>/node_modules/<pkg> (no lib/ layer) —
+    // only recognized when it sits under the true `npm root -g`.
+    if (globalRoot && p.startsWith(globalRoot + '/')) {
+      const nmIdx = p.indexOf('/node_modules/');
+      const nodeRoot = nmIdx !== -1 ? p.slice(0, nmIdx) : undefined;
+      const pkg = packageNameFromPath(p);
       if (nodeRoot && pkg) {
         return { manager: 'npm', target: pkg, nodeRoot };
       }
     }
     // pnpm global store
-    if (realPath.includes(MARKERS.pnpmGlobal)) {
-      return { manager: 'pnpm', target: packageNameFromPath(realPath) ?? undefined };
+    if (p.includes(MARKERS.pnpmGlobal)) {
+      return { manager: 'pnpm', target: packageNameFromPath(p) ?? undefined };
     }
     // bun global store
-    if (realPath.includes(MARKERS.bunGlobal)) {
-      return { manager: 'bun', target: packageNameFromPath(realPath) ?? undefined };
+    if (p.includes(MARKERS.bunGlobal)) {
+      return { manager: 'bun', target: packageNameFromPath(p) ?? undefined };
     }
     // anything else under node_modules → project-local dependency
     return { manager: 'local' };
@@ -203,13 +263,23 @@ export function getVersionAsync(def: AgentDef): Promise<string | null> {
   const [bin, ...args] = def.versionCmd;
   if (!bin) return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile(bin, args, { encoding: 'utf8', timeout: 10_000 }, (err, stdout, stderr) => {
+    const onDone = (err: unknown, stdout: string, stderr: string): void => {
       if (err) {
         resolve(null);
       } else {
         resolve(extractVersion(`${stdout}\n${stderr}`));
       }
-    });
+    };
+    if (needsShell(process.platform, bin)) {
+      execFile(
+        shellCommand(resolveBin(bin), args),
+        [],
+        { encoding: 'utf8', timeout: 10_000, shell: true },
+        onDone,
+      );
+    } else {
+      execFile(bin, args, { encoding: 'utf8', timeout: 10_000 }, onDone);
+    }
   });
 }
 

@@ -163,6 +163,16 @@ npm run build     # tsup → dist/cli.js
 node dist/cli.js list
 ```
 
+## Windows support
+
+On Windows, npm global bins are plain shim scripts (`pi`, `pi.cmd`, `pi.ps1`)
+with no `.exe`, and the global store lives at `<nodeRoot>\node_modules\` (no
+`lib/` layer). auway handles both: bare command names are resolved to their
+full shim path and run through `cmd.exe`, and the resolved `npm root -g` is
+used to tell a global install apart from a project-local one. Slow native
+installers can be given more time with `AUWAY_TIMEOUT_MS`
+(e.g. `AUWAY_TIMEOUT_MS=900000 auway`).
+
 ## License
 
 MIT

@@ -3,10 +3,20 @@ import { compareVersions, runCommand } from '../src/update.js';
 
 describe('runCommand', () => {
   it('reports errno ENOENT when the binary cannot be spawned', async () => {
-    const r = await runCommand(['auway-test-no-such-binary-xyz']);
+    // .exe marks a directly-spawned binary: missing → spawn ENOENT.
+    const r = await runCommand(['auway-test-no-such-binary-xyz.exe']);
     expect(r.code).toBe(1);
     expect(r.errno).toBe('ENOENT');
     expect(r.output).toContain('ENOENT');
+  });
+
+  it('reports a shell-level failure for extensionless names on Windows', async () => {
+    // Extensionless names (npm/pi shims) route through the shell on win32;
+    // cmd.exe fails with exit code 1, not a spawn ENOENT.
+    const r = await runCommand(['auway-test-no-such-binary-xyz']);
+    expect(r.code).not.toBe(0);
+    expect(r.errno).toBeUndefined();
+    expect(r.output.length).toBeGreaterThan(0);
   });
 
   it('leaves errno undefined for a successful run', async () => {

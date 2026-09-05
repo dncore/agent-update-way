@@ -6,6 +6,7 @@ import {
   packageNameFromPath,
   nodeRootFromPath,
   brewFormulaFromPath,
+  npmShimTarget,
 } from '../src/detect.js';
 import { buildUpdateCommand } from '../src/update.js';
 import type { DetectedAgent } from '../src/types.js';
@@ -183,5 +184,73 @@ describe('buildUpdateCommand', () => {
     // buildUpdateCommand has no single-command path for user installs;
     // updateAgents handles them via the multi-step isolated update instead.
     expect(buildUpdateCommand(a)).toBeNull();
+  });
+});
+
+describe('Windows install layouts', () => {
+  it('classifies Windows npm global store under `npm root -g` (no lib/)', () => {
+    const r = classifyManager(
+      'C:\\ProgramData\\nvm\\v24.16.0\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js',
+      'C:\\Users\\dean',
+      'C:/ProgramData/nvm/v24.16.0/node_modules',
+    );
+    expect(r.manager).toBe('npm');
+    expect(r.target).toBe('@earendil-works/pi-coding-agent');
+    expect(r.nodeRoot).toBe('C:/ProgramData/nvm/v24.16.0');
+  });
+
+  it('does not mistake a project-local install for a global one', () => {
+    const r = classifyManager(
+      'C:\\Users\\dean\\proj\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js',
+      'C:\\Users\\dean',
+      'C:/ProgramData/nvm/v24.16.0/node_modules',
+    );
+    expect(r.manager).toBe('local');
+  });
+
+  it('classifies Windows user-level installs (~/node_modules)', () => {
+    const r = classifyManager(
+      'C:\\Users\\dean\\node_modules\\@oh-my-pi\\pi-coding-agent\\dist\\cli.js',
+      'C:\\Users\\dean',
+      'C:/ProgramData/nvm/v24.16.0/node_modules',
+    );
+    expect(r.manager).toBe('user');
+  });
+});
+
+describe('npmShimTarget (Windows npm shims embed the real entry)', () => {
+  it('parses the node_modules entry out of an npm .cmd shim', () => {
+    const { mkdtempSync, writeFileSync, rmSync, existsSync } = require('node:fs');
+    const { tmpdir } = require('node:os');
+    const { join } = require('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'auway-shim-'));
+    try {
+      const shim = join(dir, 'pi.cmd');
+      writeFileSync(
+        shim,
+        '@ECHO off\r\n' +
+          '"%~dp0node.exe" "%~dp0node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js" %*\r\n',
+      );
+      const target = npmShimTarget(shim)!;
+      expect(target.replace(/\\/g, '/')).toBe(
+        join(dir, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js').replace(/\\/g, '/'),
+      );
+    } finally {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for non-shim text', () => {
+    const { mkdtempSync, writeFileSync, rmSync, existsSync } = require('node:fs');
+    const { tmpdir } = require('node:os');
+    const { join } = require('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'auway-shim2-'));
+    try {
+      const f = join(dir, 'tool');
+      writeFileSync(f, 'just some text without node_modules refs');
+      expect(npmShimTarget(f)).toBeNull();
+    } finally {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

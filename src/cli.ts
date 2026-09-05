@@ -171,12 +171,17 @@ async function cmdUpdate(targets: string[]): Promise<void> {
   // binary is verifiably back on PATH before we spawn it.
   const piGate = createPiSettleGate(piInstalled(agents));
 
+  // Slow downloads (native installers, e.g. claude/omp) may exceed the default
+  // 5min per-command budget; allow raising it: AUWAY_TIMEOUT_MS=600000 auway
+  const timeoutMs = Number(process.env.AUWAY_TIMEOUT_MS) || 300_000;
+
   await Promise.all([
     updateAgents(agents, {
       onProgress: (index, update) => {
         renderer.update(index, update);
         piGate.observe(index, agents[index]?.def.name, update);
       },
+      timeoutMs,
     }),
     withExtensions
       ? (async () => {
@@ -210,6 +215,10 @@ Pi Extensions: when pi is installed, auway also detects and updates pi's
   extension packages (every run, even if pi itself is up to date) via
   pi update --extensions. Pinned npm versions are skipped, git refs reconciled.
   Scoped updates like 'auway update claude' leave pi extensions untouched.
+
+Environment:
+  AUWAY_TIMEOUT_MS   per-command timeout in ms (default 300000). Raise it for
+                     slow networks: AUWAY_TIMEOUT_MS=900000 auway
 
 Project-local node_modules installs are always skipped.`);
 }
