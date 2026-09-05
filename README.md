@@ -173,6 +173,18 @@ used to tell a global install apart from a project-local one. Slow native
 installers can be given more time with `AUWAY_TIMEOUT_MS`
 (e.g. `AUWAY_TIMEOUT_MS=900000 auway`).
 
+npm-installed agents are updated with a staged tarball swap (pack → extract →
+directory rename) instead of `npm update -g` — faster, and it skips
+completely when the installed version already matches the registry.
+
+**Windows file-locking caveat**: while POSIX lets you replace a running
+tool's files in place (inode semantics), Windows locks a tool's native
+modules (`.node` DLLs) while it is running — neither the file nor its
+containing directory can be renamed or copied, so *no* update tool can hot-
+swap it. auway detects this and tells you exactly which process to exit:
+`auway update` skips nothing, but e.g. exit pi first, or update the others
+with `auway update claude opencode`.
+
 ## License
 
 MIT

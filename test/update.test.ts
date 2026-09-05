@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compareVersions, runCommand } from '../src/update.js';
+import { compareVersions, runCommand, needsStagedInstall } from '../src/update.js';
 
 describe('runCommand', () => {
   it('reports errno ENOENT when the binary cannot be spawned', async () => {
@@ -45,5 +45,29 @@ describe('compareVersions', () => {
   it('handles missing segments as zero (1.0 vs 1.0.0)', () => {
     expect(compareVersions('1.0', '1.0.0')).toBe(0);
     expect(compareVersions('1.0.1', '1.0')).toBe(1);
+  });
+});
+
+describe('needsStagedInstall', () => {
+  const mkAgent = (manager: string) =>
+    ({
+      def: { name: 'pi', label: 'Pi Coding Agent', nativeUpdate: [], versionCmd: ['pi', '--version'], npmPackage: '@earendil-works/pi-coding-agent' },
+      binPath: '/x/pi',
+      realPath: '/x/pi',
+      manager,
+      version: '1.0.0',
+    }) as unknown as Parameters<typeof needsStagedInstall>[1];
+
+  it('stages npm installs on win32 (locked native modules)', () => {
+    expect(needsStagedInstall('win32', mkAgent('npm'))).toBe(true);
+  });
+  it('does not stage on posix', () => {
+    expect(needsStagedInstall('darwin', mkAgent('npm'))).toBe(false);
+    expect(needsStagedInstall('linux', mkAgent('npm'))).toBe(false);
+  });
+  it('does not stage non-npm managers on win32', () => {
+    expect(needsStagedInstall('win32', mkAgent('native'))).toBe(false);
+    expect(needsStagedInstall('win32', mkAgent('brew'))).toBe(false);
+    expect(needsStagedInstall('win32', mkAgent('local'))).toBe(false);
   });
 });

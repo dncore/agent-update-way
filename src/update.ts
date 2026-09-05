@@ -134,26 +134,60 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+/** Query the latest published version of an npm package (best effort). */
+export async function npmViewVersion(pkg: string): Promise<string | null> {
+  const r = await runCommand(['npm', 'view', pkg, 'version'], 20_000);
+  if (r.code !== 0) return null;
+  const m = r.output.match(/\d+\.\d+\.\d+/);
+  return m ? m[0] : null;
+}
+
 /**
- * Precisely update a user-level install under ~/node_modules without touching
- * the rest of the tree. `npm install --prefix ~` / `bun add -g` would
- * re-resolve the whole ~/package.json dependency tree (churn 100+ unrelated
- * packages), so instead we:
+ * Whether an agent's update must go through the staged (pack+swap) install
+ * instead of `npm update -g`.
+ *
+ * On Windows, `npm update -g` reifies the package by copying files over the
+ * existing install — that fails with EBUSY whenever the running tool has its
+ * native modules (.node DLLs) loaded (e.g. pi's clipboard). The staged
+ * install never touches the running files: it writes the new version into a
+ * fresh directory and atomically swaps the directory name, leaving the old
+ * (locked) directory behind until the process exits.
+ */
+export function needsStagedInstall(platform: NodeJS.Platform, agent: DetectedAgent): boolean {
+  return platform === 'win32' && agent.manager === 'npm';
+}
+
+/**
+ * Precisely update an npm package by downloading the tarball, extracting it
+ * into a fresh directory and atomically swapping it into `targetDir`.
+ *
+ * Rationale: `npm install/update -g` (and `--prefix`) re-resolve or copy over
+ * the existing directory, which on Windows fails with EBUSY whenever the
+ * package's native modules are loaded by a running process. A directory
+ * rename never touches the locked files, so this works while `pi` itself is
+ * running — the new version is used by the next process start, and the old
+ * (locked) directory is left at `<pkg>.auway.bak` for cleanup after exit.
  *
  *   1. npm view <pkg>@latest version        → compare against installed
  *   2. npm pack <pkg>@latest                 → download tarball (npm verifies
  *                                              the registry integrity hash)
  *   3. tar -xzf → package/                   → extract
- *   4. atomic swap into ~/node_modules/<pkg> (keep a .bak for rollback)
- *   5. npm install --prefix <pkgdir> --omit=dev --no-save
+ *   4. atomic swap into targetDir (keep a .bak for rollback)
+ *   5. npm install --prefix <newdir> --omit=dev --no-save
  *      → installs the package's dependencies nested inside its own dir, so
- *        unrelated packages in ~/node_modules are never touched
+ *        unrelated packages are never touched
  *
  * All subprocesses inherit the proxy env, so the proxy-only network works.
+ *
+ * Note: on Windows this still cannot replace a *loaded* native module (the
+ * directory rename is also refused by the OS while a file inside is
+ * image-locked) — callers surface a clear "exit the running process" hint.
  */
-async function updateUserLevelInstall(
+export async function installPackageStaged(
+  targetDir: string,
   agent: DetectedAgent,
   getVersion: (a: DetectedAgent) => Promise<string | null>,
+  timeoutMs?: number,
 ): Promise<UpdateResult> {
   const pkg = agent.managerTarget ?? agent.def.npmPackage;
   const before = agent.version;
@@ -165,13 +199,10 @@ async function updateUserLevelInstall(
     error,
   });
 
-  if (!pkg) return fail('no npm package name for user-level install', 'skipped');
-  const nmIdx = agent.realPath.indexOf('/node_modules/');
-  if (nmIdx === -1) return fail('cannot locate node_modules root', 'skipped');
-  const targetDir = join(agent.realPath.slice(0, nmIdx), 'node_modules', ...pkg.split('/'));
+  if (!pkg) return fail('no npm package name for staged install', 'skipped');
 
   // 1. latest version
-  const v = await runCommand(['npm', 'view', pkg, 'version']);
+  const v = await runCommand(['npm', 'view', pkg, 'version'], timeoutMs ?? 300_000);
   if (v.code !== 0) return fail(`npm view failed: ${v.output.split('\n')[0]}`);
   const latest = v.output.trim();
   if (!latest) return fail('npm view returned no version');
@@ -180,18 +211,22 @@ async function updateUserLevelInstall(
     return { agent, status: 'up-to-date', before, after: before };
   }
 
-  const tmp = mkdtempSync(join(tmpdir(), 'auway-user-'));
+  const tmp = mkdtempSync(join(tmpdir(), 'auway-staged-'));
+  const bak = `${targetDir}.auway.bak`;
+  // Drop leftovers from earlier runs; those may be locked by a running
+  // process, so this is best-effort.
+  const rmBestEffort = (path: string): void => {
+    try {
+      rmSync(path, { recursive: true, force: true });
+    } catch {
+      // locked (native module in use) — leave it; removed after process exit
+    }
+  };
+  rmBestEffort(bak);
   try {
     // 2. download tarball via npm pack --json (registry integrity verified by
     //    npm; JSON output keeps the filename clean of stderr noise)
-    const pack = await runCommand([
-      'npm',
-      'pack',
-      `${pkg}@latest`,
-      '--pack-destination',
-      tmp,
-      '--json',
-    ]);
+    const pack = await runCommand(['npm', 'pack', `${pkg}@latest`, '--pack-destination', tmp, '--json'], timeoutMs ?? 300_000);
     if (pack.code !== 0) return fail(`npm pack failed: ${pack.output.split('\n')[0]}`);
     let tarballName: string | undefined;
     try {
@@ -202,17 +237,20 @@ async function updateUserLevelInstall(
     }
     if (!tarballName) return fail('npm pack produced no tarball');
 
-    // 3. extract
+    // 3. extract. Windows paths must be forward-slashed for the MSYS GNU tar.
     const extractDir = join(tmp, 'x');
     mkdirSync(extractDir, { recursive: true });
-    const x = await runCommand(['tar', '-xzf', join(tmp, tarballName), '-C', extractDir]);
+    const tarballPath = join(tmp, tarballName).replace(/\\/g, '/');
+    const x = await runCommand(
+      ['tar', '--force-local', '-xzf', tarballPath, '-C', extractDir.replace(/\\/g, '/')],
+      timeoutMs ?? 300_000,
+    );
     if (x.code !== 0) return fail(`extract failed: ${x.output.split('\n')[0]}`);
     const pkgDir = join(extractDir, 'package');
     if (!existsSync(pkgDir)) return fail('tarball has no package/ directory');
 
-    // 4. atomic swap with backup for rollback
-    const bak = `${targetDir}.auway.bak`;
-    if (existsSync(bak)) rmSync(bak, { recursive: true, force: true });
+    // 4. atomic swap with backup for rollback (directory rename never
+    //    touches locked files inside the old directory)
     if (existsSync(targetDir)) renameSync(targetDir, bak);
     try {
       renameSync(pkgDir, targetDir);
@@ -221,25 +259,73 @@ async function updateUserLevelInstall(
       return fail('failed to swap package directory');
     }
 
-    // 5. nested dependencies (isolated from ~/node_modules)
+    // 5. nested dependencies (isolated from the rest of node_modules)
     const dep = await runCommand(
       ['npm', 'install', '--prefix', targetDir, '--omit=dev', '--no-save', '--package-lock=false'],
-      600_000,
+      timeoutMs ?? 600_000,
     );
     if (dep.code !== 0) {
       // rollback to previous version
-      rmSync(targetDir, { recursive: true, force: true });
+      rmBestEffort(targetDir);
       if (existsSync(bak)) renameSync(bak, targetDir);
       return fail(`dependency install failed: ${dep.output.split('\n')[0]}`);
     }
 
-    rmSync(bak, { recursive: true, force: true });
+    // New version writes are all fresh files; the old directory may still
+    // hold locked native modules — drop it now, or leave it for cleanup.
+    rmBestEffort(bak);
     const after = await getVersion(agent);
     return { agent, status: 'updated', before, after };
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    rmBestEffort(tmp);
+  }
+}
+
+/**
+ * Update a user-level install under ~/node_modules without touching the rest
+ * of the tree: staged tarball install into the package's directory.
+ */
+async function updateUserLevelInstall(
+  agent: DetectedAgent,
+  getVersion: (a: DetectedAgent) => Promise<string | null>,
+): Promise<UpdateResult> {
+  const pkg = agent.managerTarget ?? agent.def.npmPackage;
+  const fail = (error: string, status: 'failed' | 'skipped' = 'failed'): UpdateResult => ({
+    agent,
+    status,
+    before: agent.version,
+    after: agent.version,
+    error,
+  });
+
+  if (!pkg) return fail('no npm package name for user-level install', 'skipped');
+  const nmIdx = agent.realPath.indexOf('/node_modules/');
+  if (nmIdx === -1) return fail('cannot locate node_modules root', 'skipped');
+  const targetDir = join(agent.realPath.slice(0, nmIdx), 'node_modules', ...pkg.split('/'));
+  return installPackageStaged(targetDir, agent, getVersion);
+}
+
+/**
+ * Detect whether a process whose command line contains `match` is running
+ * (Windows only; POSIX does not lock files this way).
+ */
+async function isProcessRunning(match: string): Promise<boolean> {
+  if (process.platform !== 'win32') return false;
+  try {
+    const r = await runCommand(
+      [
+        'powershell',
+        '-NoProfile',
+        '-Command',
+        `(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '${match.replace(/'/g, '')}' }).Count`,
+      ],
+      15_000,
+    );
+    return r.code === 0 && Number.parseInt(r.stdout, 10) > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -294,6 +380,56 @@ export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions 
             : { state: result.status, before: result.before, after: result.after, error: result.error };
         onProgress?.(index, terminal);
         return result;
+      }
+
+      // npm global installs: staged (pack+swap) on Windows — `npm update -g`
+      // copies over the running install and fails with EBUSY on loaded native
+      // modules; a directory rename bypasses that. On POSIX, skip when already
+      // at the latest version to avoid a pointless `npm update -g` reify.
+      if (agent.manager === 'npm') {
+        const pkg = agent.managerTarget ?? agent.def.npmPackage;
+        if (!pkg) return fail('skipped', 'no npm package name for npm install');
+        onProgress?.(index, { state: 'running', before });
+
+        if (needsStagedInstall(process.platform, agent)) {
+          const nodeRoot = agent.nodeRoot;
+          if (!nodeRoot) return fail('failed', 'cannot locate node root for staged install');
+          const targetDir = join(nodeRoot, 'node_modules', ...pkg.split('/'));
+          const result = await installPackageStaged(targetDir, agent, getVersionAfter, opts.timeoutMs);
+          // Windows refuses to swap a directory while one of its native
+          // modules is loaded by a running process — give a precise hint.
+          if (result.status === 'failed' && /EBUSY|EPERM|EACCES/i.test(result.error ?? '')) {
+            const seg = pkg.split('/').pop() ?? pkg;
+            if (await isProcessRunning(seg)) {
+              const others = agents.filter((a) => a.def.name !== agent.def.name).map((a) => a.def.name).join(' ');
+              result.error = `${result.error}\n\nA ${seg} process is still running and its native modules are locked. Exit it, then re-run (or update the others now: \`auway update ${others}\`).`;
+            }
+          }
+          const terminal: TaskUpdate =
+            result.status === 'updated' || result.status === 'up-to-date'
+              ? { state: 'success', before: result.before, after: result.after }
+              : { state: result.status, before: result.before, after: result.after, error: result.error };
+          onProgress?.(index, terminal);
+          return result;
+        }
+
+        if (agent.version) {
+          const latest = await npmViewVersion(pkg);
+          if (latest && compareVersions(latest, agent.version) <= 0) {
+            onProgress?.(index, { state: 'success', before, after: before });
+            return { agent, status: 'up-to-date', before, after: before };
+          }
+        }
+        const cmd = buildUpdateCommand(agent);
+        if (!cmd) return fail('skipped', agent.skipReason ?? 'no update command available');
+        const { code, output } = await runCommand(cmd, opts.timeoutMs);
+        if (code !== 0) {
+          return fail('failed', output.split('\n').slice(0, 8).join('\n') || `exit code ${code}`);
+        }
+        const afterNpm = await getVersionAfter(agent);
+        const changedNpm = afterNpm !== null && before !== afterNpm;
+        onProgress?.(index, { state: 'success', before, after: afterNpm });
+        return { agent, status: changedNpm ? 'updated' : 'up-to-date', before, after: afterNpm };
       }
 
       const cmd = buildUpdateCommand(agent);
