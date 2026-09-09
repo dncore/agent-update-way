@@ -8,6 +8,63 @@ import { needsShell, shellCommand, resolveBin } from './shell.js';
 import type { DetectedAgent, TaskUpdate, UpdateResult } from './types.js';
 
 /**
+ * Run a command, retrying on spawn ENOENT — the binary was momentarily missing
+ * (e.g. `npm update -g` / `<agent> update` deleted and is re-creating its bin
+ * symlink while we tried to spawn it). Used by the plugin/extension update
+ * tasks that spawn an agent binary right after that agent's own update.
+ */
+export async function runWithEnoentRetry(
+  cmd: string[],
+  opts: { timeoutMs?: number; retries?: number; retryDelayMs?: number } = {},
+): Promise<{ code: number; output: string; errno?: string }> {
+  const retries = opts.retries ?? 3;
+  const retryDelayMs = opts.retryDelayMs ?? 400;
+  for (let attempt = 0; ; attempt++) {
+    const r = await runCommand(cmd, opts.timeoutMs ?? 300_000);
+    if (r.errno === 'ENOENT' && attempt < retries) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+      continue;
+    }
+    return { code: r.code, output: r.output, errno: r.errno };
+  }
+}
+
+/**
+ * Gate that holds a follow-up task (agent plugins / extensions) until the host
+ * agent's own update reaches a terminal state.
+ *
+ * When an agent is npm-managed, `npm update -g <pkg>` deletes and re-creates
+ * its bin symlink; spawning the binary inside that window fails with ENOENT.
+ * `updateAgents` emits a task's terminal progress event only *after* the
+ * post-update version re-check, so observing that event guarantees the binary
+ * is back on PATH before follow-up tasks spawn it. When the host is absent the
+ * gate resolves immediately.
+ */
+export function createSettleGate(hostName: string | undefined): {
+  /** Resolves once the host agent's own update task has reached a terminal state. */
+  settled: Promise<void>;
+  /** Feed every updateAgents progress event into the gate. */
+  observe: (index: number, agentName: string | undefined, update: TaskUpdate) => void;
+} {
+  let release: (() => void) | undefined;
+  const settled = hostName
+    ? new Promise<void>((resolve) => {
+        release = resolve;
+      })
+    : Promise.resolve();
+  return {
+    settled,
+    observe(index, agentName, update) {
+      if (!hostName || agentName !== hostName) return;
+      if (update.state === 'running') return;
+      // first terminal event for the host releases the gate; ignore the rest
+      release?.();
+      release = undefined;
+    },
+  };
+}
+
+/**
  * Build the update command for an agent based on its install manager.
  *
  * This is the core difference from tools like aiupdate which always call the

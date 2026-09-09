@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { compareVersions, runCommand, needsStagedInstall } from '../src/update.js';
+import {
+  compareVersions,
+  runCommand,
+  needsStagedInstall,
+  runWithEnoentRetry,
+  createSettleGate,
+} from '../src/update.js';
 
 describe('runCommand', () => {
   it('reports errno ENOENT when the binary cannot be spawned', async () => {
@@ -12,7 +18,9 @@ describe('runCommand', () => {
 
   it('reports a shell-level failure for extensionless names on Windows', async () => {
     // Extensionless names (npm/pi shims) route through the shell on win32;
-    // cmd.exe fails with exit code 1, not a spawn ENOENT.
+    // cmd.exe fails with exit code 1, not a spawn ENOENT. On POSIX an
+    // extensionless name direct-spawns, so this is a win32-only behavior.
+    if (process.platform !== 'win32') return;
     const r = await runCommand(['auway-test-no-such-binary-xyz']);
     expect(r.code).not.toBe(0);
     expect(r.errno).toBeUndefined();
@@ -23,6 +31,61 @@ describe('runCommand', () => {
     const r = await runCommand(['node', '-e', 'process.exit(0)']);
     expect(r.code).toBe(0);
     expect(r.errno).toBeUndefined();
+  });
+});
+
+describe('runWithEnoentRetry', () => {
+  // Real spawn ENOENT — no mock needed; retries are bounded and delays 1ms.
+  // (.exe-suffixed names direct-spawn on every platform; extensionless names
+  // route through the shell on win32 and fail without an errno.)
+  it('gives up once retries are exhausted on persistent ENOENT', async () => {
+    const r = await runWithEnoentRetry(['auway-test-no-such-binary-xyz.exe'], {
+      retries: 2,
+      retryDelayMs: 1,
+    });
+    expect(r.code).toBe(1);
+    expect(r.errno).toBe('ENOENT');
+  });
+
+  it('returns success output without retrying', async () => {
+    const r = await runWithEnoentRetry(['node', '-e', 'console.log("ok")'], {
+      retries: 3,
+      retryDelayMs: 1,
+    });
+    expect(r.code).toBe(0);
+    expect(r.output).toBe('ok');
+  });
+});
+
+describe('createSettleGate', () => {
+  it('stays locked on running events, releases on the first terminal event for the host', async () => {
+    const gate = createSettleGate('claude');
+    let released = false;
+    void gate.settled.then(() => {
+      released = true;
+    });
+    gate.observe(0, 'claude', { state: 'running', before: '1.0.0' });
+    await Promise.resolve();
+    expect(released).toBe(false);
+    gate.observe(0, 'claude', { state: 'success', before: '1.0.0', after: '1.0.1' });
+    await gate.settled;
+    expect(released).toBe(true);
+  });
+
+  it('ignores progress from other agents', async () => {
+    const gate = createSettleGate('claude');
+    let released = false;
+    void gate.settled.then(() => {
+      released = true;
+    });
+    gate.observe(0, 'codex', { state: 'failed', error: 'boom' });
+    await Promise.resolve();
+    expect(released).toBe(false);
+  });
+
+  it('resolves immediately when the host is absent', async () => {
+    const gate = createSettleGate(undefined);
+    await gate.settled; // must not hang
   });
 });
 

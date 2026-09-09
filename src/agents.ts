@@ -68,6 +68,14 @@ export const KNOWN_AGENTS: AgentDef[] = [
     nativeUpdate: ['agy', 'update'],
     versionCmd: ['agy', 'version'],
   },
+  {
+    name: 'grok',
+    label: 'Grok Build',
+    nativeUpdate: ['grok', 'update'],
+    versionCmd: ['grok', '--version'],
+    npmPackage: '@xai-official/grok',
+    brewFormula: 'grok-build',
+  },
 ];
 
 export function findAgent(name: string): AgentDef | undefined {

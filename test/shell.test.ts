@@ -23,13 +23,15 @@ describe('needsShell', () => {
 });
 
 describe('shellCommand', () => {
-  it('quotes bin and args for the shell', () => {
-    // Path with spaces must stay a single argument.
-    const s = shellCommand('C:\\Program Files\\npm\\npm.cmd', ['--prefix', 'C:\\x y']);
+  it('quotes bin and args for the shell (win32: doubled double quotes)', () => {
+    // Path with spaces must stay a single argument. Platform is passed
+    // explicitly so the win32 quoting is tested on every OS.
+    const s = shellCommand('C:\\Program Files\\npm\\npm.cmd', ['--prefix', 'C:\\x y'], 'win32');
     expect(s).toContain('"C:\\Program Files\\npm\\npm.cmd"');
     expect(s).toContain('"C:\\x y"');
   });
   it('quoteArg escapes embedded quotes (Windows: doubled; POSIX: \\\')', () => {
-    expect(quoteArg('a"b')).toMatch(/^".*"$/);
+    expect(quoteArg('a"b', 'win32')).toBe('"a""b"');
+    expect(quoteArg("a'b", 'darwin')).toBe(`'a'\\''b'`);
   });
 });

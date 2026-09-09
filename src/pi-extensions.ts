@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { compareVersions, runCommand } from './update.js';
-import type { PiExtensionsInfo, PiPackageInfo, TaskUpdate } from './types.js';
+import { compareVersions, runCommand, runWithEnoentRetry, createSettleGate } from './update.js';
+import type { PiExtensionsInfo, PiPackageInfo } from './types.js';
 
 /**
  * Pi extension / skill package support.
@@ -298,37 +298,10 @@ export async function detectPiExtensions(opts: PiExtensionsOptions = {}): Promis
 
 /**
  * Gate that prevents the "Pi Extensions" task from spawning `pi` while pi
- * itself is being reinstalled.
- *
- * When pi is npm-managed, `npm update -g @earendil-works/pi-coding-agent`
- * deletes and re-creates the bin/pi symlink; spawning `pi` inside that window
- * fails with ENOENT. `updateAgents` emits the pi task's terminal progress
- * event only *after* the post-update `pi --version` re-check, so observing
- * that event guarantees the binary is back on PATH before `pi update
- * --extensions` runs. When `hasPi` is false the gate resolves immediately.
+ * itself is being reinstalled (see {@link createSettleGate}).
  */
-export function createPiSettleGate(hasPi: boolean): {
-  /** Resolves once pi's own update task has reached a terminal state. */
-  settled: Promise<void>;
-  /** Feed every updateAgents progress event into the gate. */
-  observe: (index: number, agentName: string | undefined, update: TaskUpdate) => void;
-} {
-  let release: (() => void) | undefined;
-  const settled = hasPi
-    ? new Promise<void>((resolve) => {
-        release = resolve;
-      })
-    : Promise.resolve();
-  return {
-    settled,
-    observe(index, agentName, update) {
-      if (!hasPi || agentName !== 'pi') return;
-      if (update.state === 'running') return;
-      // first terminal event for pi releases the gate; ignore the rest
-      release?.();
-      release = undefined;
-    },
-  };
+export function createPiSettleGate(hasPi: boolean) {
+  return createSettleGate(hasPi ? 'pi' : undefined);
 }
 
 /** Options for {@link updatePiExtensions}. */
@@ -347,20 +320,11 @@ export async function updatePiExtensions(opts: UpdatePiExtensionsOptions = {}): 
   code: number;
   output: string;
 }> {
-  const cmd = [opts.piCmd ?? 'pi', 'update', '--extensions'];
-  const retries = opts.retries ?? 3;
-  const retryDelayMs = opts.retryDelayMs ?? 400;
-  for (let attempt = 0; ; attempt++) {
-    const r = await runCommand(cmd, opts.timeoutMs ?? 300_000);
-    // Spawn failed because the binary was momentarily missing (npm rebuilding
-    // the bin/pi link, another process reinstalling pi, ...). Back off and
-    // retry — the link is re-created within ~1-3s.
-    if (r.errno === 'ENOENT' && attempt < retries) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
-      continue;
-    }
-    return { code: r.code, output: r.output };
-  }
+  return runWithEnoentRetry([opts.piCmd ?? 'pi', 'update', '--extensions'], {
+    timeoutMs: opts.timeoutMs,
+    retries: opts.retries,
+    retryDelayMs: opts.retryDelayMs,
+  });
 }
 
 /** One-line status for the aggregate renderer row, e.g. "8 packages · 2 outdated". */

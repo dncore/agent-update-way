@@ -95,3 +95,45 @@ export interface PiExtensionsInfo {
   /** Short human summary, e.g. "8 packages · 2 updates available". */
   summary: string;
 }
+
+/** One installed plugin of an agent (claude / codex / grok). */
+export interface AgentPluginInfo {
+  /** Unique id, e.g. "code-review@claude-plugins-official". */
+  id: string;
+  /** Version as reported by the agent; null if unknown. */
+  version: string | null;
+  enabled: boolean;
+}
+
+/** Aggregate info about one agent's installed plugins. */
+export interface AgentPluginsInfo {
+  /** True when the agent is installed and its plugin list was readable. */
+  enabled: boolean;
+  plugins: AgentPluginInfo[];
+  total: number;
+  /** Short human summary, e.g. "19 plugins". */
+  summary: string;
+}
+
+/** One locally installed skill directory. */
+export interface SkillInfo {
+  /** Directory name, e.g. "docx". */
+  name: string;
+  /** Real path after symlink resolution. */
+  path: string;
+  /** git = a git clone (updatable via git pull); plain = no update source. */
+  source: 'git' | 'plain';
+  /** Short HEAD rev for git skills; null otherwise/unknown. */
+  rev: string | null;
+}
+
+/** Aggregate info about locally installed skills. */
+export interface SkillsInfo {
+  skills: SkillInfo[];
+  total: number;
+  gitCount: number;
+  /** Plain copies have no recorded origin — they cannot be updated reliably. */
+  plainCount: number;
+  /** Short human summary, e.g. "52 skills (0 git, 52 no update source)". */
+  summary: string;
+}

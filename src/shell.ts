@@ -61,8 +61,8 @@ export function needsShell(platform: NodeJS.Platform, bin: string): boolean {
 }
 
 /** Quote one argument for the platform's default shell. */
-export function quoteArg(arg: string): string {
-  if (process.platform === 'win32') {
+export function quoteArg(arg: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') {
     // cmd.exe: double quotes; embedded quotes are doubled (no backslash escapes).
     return `"${arg.replace(/"/g, '""')}"`;
   }
@@ -71,6 +71,10 @@ export function quoteArg(arg: string): string {
 }
 
 /** Join a bin + args into a single shell command string (for shell: true). */
-export function shellCommand(bin: string, args: string[]): string {
-  return [bin, ...args].map(quoteArg).join(' ');
+export function shellCommand(
+  bin: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return [bin, ...args].map((a) => quoteArg(a, platform)).join(' ');
 }

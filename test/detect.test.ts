@@ -90,6 +90,13 @@ describe('classifyManager', () => {
     expect(r.target).toBe('codex');
   });
 
+  it('classifies grok-build cask installs (cask name differs from binary name)', () => {
+    const r = classifyManager('/opt/homebrew/Caskroom/grok-build/1.0.13/grok-1.0.13-macos-aarch64');
+    expect(r.manager).toBe('brew');
+    expect(r.brewCask).toBe(true);
+    expect(r.target).toBe('grok-build'); // → brew upgrade --cask grok-build
+  });
+
   it('classifies brew formula installs', () => {
     const r = classifyManager('/opt/homebrew/Cellar/codex/0.147.0/bin/codex');
     expect(r.manager).toBe('brew');

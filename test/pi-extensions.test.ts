@@ -12,14 +12,15 @@ import {
   createPiSettleGate,
   updatePiExtensions,
 } from '../src/pi-extensions.js';
-import { runCommand } from '../src/update.js';
+import { runCommand, runWithEnoentRetry } from '../src/update.js';
 
-// Mock the subprocess runner so updatePiExtensions' ENOENT-retry logic can be
-// exercised without spawning anything. Other exports (compareVersions) stay
-// intact; detectPiExtensions tests inject their own npmView anyway.
+// Mock the subprocess runner so updatePiExtensions can be exercised without
+// spawning anything. Retry semantics themselves are covered in update.test.ts
+// (runWithEnoentRetry); here we assert delegation. detectPiExtensions tests
+// inject their own npmView anyway.
 vi.mock('../src/update.js', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/update.js')>();
-  return { ...mod, runCommand: vi.fn() };
+  return { ...mod, runCommand: vi.fn(), runWithEnoentRetry: vi.fn() };
 });
 
 function tempHome(packages: string[]): { dir: string; settings: string } {
@@ -264,61 +265,36 @@ describe('createPiSettleGate', () => {
 
 describe('updatePiExtensions', () => {
   beforeEach(() => {
-    vi.mocked(runCommand).mockReset();
+    vi.mocked(runWithEnoentRetry).mockReset();
   });
 
-  it('retries on spawn ENOENT until the binary is back', async () => {
-    vi.mocked(runCommand)
-      .mockResolvedValueOnce({
-        code: 1,
-        output: 'spawn pi ENOENT',
-        stdout: '',
-        stderr: 'spawn pi ENOENT',
-        errno: 'ENOENT',
-      })
-      .mockResolvedValueOnce({
-        code: 1,
-        output: 'spawn pi ENOENT',
-        stdout: '',
-        stderr: 'spawn pi ENOENT',
-        errno: 'ENOENT',
-      })
-      .mockResolvedValueOnce({
-        code: 0,
-        output: 'all extensions up to date',
-        stdout: 'all extensions up to date',
-        stderr: '',
-      });
+  it('delegates to runWithEnoentRetry with pi update --extensions', async () => {
+    vi.mocked(runWithEnoentRetry).mockResolvedValue({
+      code: 0,
+      output: 'all extensions up to date',
+    });
     const r = await updatePiExtensions({ retries: 3, retryDelayMs: 1 });
     expect(r.code).toBe(0);
-    expect(vi.mocked(runCommand)).toHaveBeenCalledTimes(3);
-    expect(vi.mocked(runCommand).mock.calls[0]![0]).toEqual(['pi', 'update', '--extensions']);
+    expect(vi.mocked(runWithEnoentRetry)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runWithEnoentRetry).mock.calls[0]![0]).toEqual([
+      'pi',
+      'update',
+      '--extensions',
+    ]);
+    expect(vi.mocked(runWithEnoentRetry).mock.calls[0]![1]).toMatchObject({
+      retries: 3,
+      retryDelayMs: 1,
+    });
   });
 
-  it('gives up once retries are exhausted', async () => {
-    vi.mocked(runCommand).mockResolvedValue({
+  it('propagates failures from the retry runner', async () => {
+    vi.mocked(runWithEnoentRetry).mockResolvedValue({
       code: 1,
       output: 'spawn pi ENOENT',
-      stdout: '',
-      stderr: 'spawn pi ENOENT',
-      errno: 'ENOENT',
     });
     const r = await updatePiExtensions({ retries: 2, retryDelayMs: 1 });
     expect(r.code).toBe(1);
     expect(r.output).toContain('ENOENT');
-    expect(vi.mocked(runCommand)).toHaveBeenCalledTimes(3); // initial + 2 retries
-  });
-
-  it('does not retry ordinary failures (non-ENOENT)', async () => {
-    vi.mocked(runCommand).mockResolvedValue({
-      code: 5,
-      output: 'boom',
-      stdout: '',
-      stderr: 'boom',
-    });
-    const r = await updatePiExtensions({ retries: 3, retryDelayMs: 1 });
-    expect(r.code).toBe(5);
-    expect(vi.mocked(runCommand)).toHaveBeenCalledTimes(1);
   });
 });
 
