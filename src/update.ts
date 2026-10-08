@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { extractVersion } from './detect.js';
 import { needsShell, shellCommand, resolveBin } from './shell.js';
-import type { DetectedAgent, TaskUpdate, UpdateResult } from './types.js';
+import type { AgentDef, DetectedAgent, TaskUpdate, UpdateResult } from './types.js';
 
 /**
  * Run a command, retrying on spawn ENOENT — the binary was momentarily missing
@@ -174,6 +174,8 @@ export interface UpdateOptions {
   onProgress?: (index: number, update: TaskUpdate) => void;
   /** Override version re-check after update (mostly for tests). */
   getVersion?: (a: DetectedAgent) => Promise<string | null>;
+  /** Override the GitHub latest-release check (mostly for tests). */
+  getLatest?: (repo: string) => Promise<string | null>;
   /** Override the per-command timeout (ms). Default 300_000. */
   timeoutMs?: number;
 }
@@ -197,6 +199,38 @@ export async function npmViewVersion(pkg: string): Promise<string | null> {
   if (r.code !== 0) return null;
   const m = r.output.match(/\d+\.\d+\.\d+/);
   return m ? m[0] : null;
+}
+
+/** Parse the version out of GitHub's releases/latest JSON (`tag_name: "rust-v0.161.0"`). */
+export function versionFromGithubReleaseJson(raw: string): string | null {
+  try {
+    const tag = (JSON.parse(raw) as { tag_name?: unknown }).tag_name;
+    return typeof tag === 'string' ? extractVersion(tag) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Query the latest release version of a GitHub repo (best effort). Shells out
+ * to curl rather than using fetch so the subprocess inherits proxy env vars —
+ * the same reasoning as the staged install. Any failure (no curl, blocked
+ * domain, API rate limit) yields null, which degrades the update flow to
+ * "latest unknown" instead of breaking it.
+ */
+export async function githubLatestVersion(repo: string): Promise<string | null> {
+  const r = await runCommand(
+    ['curl', '-fsSL', '--max-time', '20', `https://api.github.com/repos/${repo}/releases/latest`],
+    30_000,
+  );
+  if (r.code !== 0) return null;
+  return versionFromGithubReleaseJson(r.stdout);
+}
+
+/** Platform-appropriate native-install fallback command for a def (null if none). */
+export function nativeFallbackCommand(def: AgentDef, platform: NodeJS.Platform): string[] | null {
+  if (!def.nativeUpdateFallback) return null;
+  return platform === 'win32' ? def.nativeUpdateFallback.windows : def.nativeUpdateFallback.unix;
 }
 
 /**
@@ -393,6 +427,7 @@ async function isProcessRunning(match: string): Promise<boolean> {
  */
 export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions = {}): Promise<UpdateResult[]> {
   const { onProgress, getVersion } = opts;
+  const getLatest = opts.getLatest ?? githubLatestVersion;
   const getVersionAfter = getVersion ?? (async (a: DetectedAgent) => {
     // re-run version command after update
     const [bin, ...rest] = a.def.versionCmd;
@@ -495,12 +530,48 @@ export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions 
       }
 
       onProgress?.(index, { state: 'running', before });
-      const { code, output } = await runCommand(cmd, opts.timeoutMs);
+
+      // Native installs with a GitHub release source (codex): pre-check the
+      // latest version, same idea as the npm path's npmViewVersion check. The
+      // official self-update bootstraps from vendor domains (chatgpt.com) that
+      // are unreachable on some networks, and `curl … | sh` exits 0 with an
+      // empty pipe (fake success) — the version comparison is the only
+      // reliable signal there.
+      const latest = agent.def.githubReleaseRepo
+        ? await getLatest(agent.def.githubReleaseRepo)
+        : null;
+      if (latest && before && compareVersions(before, latest) >= 0) {
+        onProgress?.(index, { state: 'success', before, after: before });
+        return { agent, status: 'up-to-date', before, after: before };
+      }
+
+      let { code, output } = await runCommand(cmd, opts.timeoutMs);
+      let after = await getVersionAfter(agent);
+
+      // Self-update failed, or silently no-oped (exit 0 but still behind
+      // latest) → retry through the GitHub Releases bootstrap.
+      const behind = latest !== null && (after === null || compareVersions(after, latest) < 0);
+      const fallback = nativeFallbackCommand(agent.def, process.platform);
+      if (fallback && (code !== 0 || behind)) {
+        const fb = await runCommand(fallback, opts.timeoutMs);
+        code = fb.code;
+        output = fb.output;
+        after = await getVersionAfter(agent);
+      }
+
       if (code !== 0) {
         return fail('failed', output.split('\n').slice(0, 8).join('\n') || `exit code ${code}`);
       }
+      // Exit 0 alone is not proof of an update (blocked bootstrap pipes exit
+      // 0 without doing anything); when latest is known, require the binary
+      // to actually be at it.
+      if (latest !== null && (after === null || compareVersions(after, latest) < 0)) {
+        return fail(
+          'failed',
+          `update did not take effect: still ${after ?? before ?? '?'} (latest ${latest})`,
+        );
+      }
 
-      const after = await getVersionAfter(agent);
       const changed = after !== null && before !== after;
       const status = changed ? 'updated' : 'up-to-date';
       onProgress?.(index, { state: 'success', before, after });

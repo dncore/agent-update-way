@@ -22,6 +22,15 @@ export interface AgentDef {
   npmPackage?: string;
   /** Homebrew formula name (e.g. "codex"). */
   brewFormula?: string;
+  /** GitHub repo whose latest release tag is the latest version for native
+   *  installs (e.g. "openai/codex" → tag "rust-v0.161.0"). Used to detect
+   *  available updates and no-op self-updates on networks where the vendor's
+   *  update endpoints are unreachable. */
+  githubReleaseRepo?: string;
+  /** Fallback update command for native installs, used when the official
+   *  self-update fails or silently no-ops (e.g. bootstrap domains like
+   *  chatgpt.com blocked). Platform-specific: unix (sh) / windows (powershell). */
+  nativeUpdateFallback?: { unix: string[]; windows: string[] };
   /** Whether `npm update -g <pkg>` is a reliable path (true if npmPackage is set). */
 }
 

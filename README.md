@@ -14,7 +14,7 @@ npx auway
 | Pi Coding Agent | `pi` | `npm update -g --prefix <node-root> @earendil-works/pi-coding-agent` |
 | Oh My Pi | `omp` | `omp update` (native) / `bun add -g @oh-my-pi/pi-coding-agent` (bun) |
 | OpenCode | `opencode` | `opencode upgrade` (native) / `brew upgrade opencode` |
-| OpenAI Codex | `codex` | `brew upgrade --cask codex` (brew cask) |
+| OpenAI Codex | `codex` | `brew upgrade --cask codex` (brew) / `codex update` (native, with GitHub Releases fallback) |
 | GitHub Copilot CLI | `copilot` | `brew upgrade --cask copilot-cli` (brew cask) |
 | Cursor Agent | `cursor-agent` | `cursor-agent update` |
 | Antigravity CLI | `agy` | `agy update` |
@@ -112,6 +112,17 @@ project-local node_modules  →  never touched (skipped with a warning)
 > package dir. The rest of your `~/node_modules` tree is never touched — a
 > plain `npm install --prefix ~` or `bun add -g` would re-resolve and churn
 > the whole user-level tree (measured: 100+ unrelated packages).
+
+> **Native Codex on blocked networks** — `codex update` bootstraps its
+> installer from `chatgpt.com` and the installer probes `releases.openai.com`;
+> where those domains are unreachable the update either fails or (worse)
+> *fake-succeeds*: `curl … \| sh` exits 0 when curl delivers nothing. auway
+> therefore checks the latest release via the GitHub API first, and when
+> `codex update` fails or silently no-ops, retries with the same official
+> installer fetched from `raw.githubusercontent.com` and
+> `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false` — script *and* binary
+> entirely from GitHub Releases. An update that exits 0 without reaching the
+> latest version is reported as failed, never as "up to date".
 
 ## Install
 

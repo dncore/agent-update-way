@@ -194,6 +194,27 @@ describe('buildUpdateCommand', () => {
   });
 });
 
+describe('agent registry', () => {
+  it('agy uses `agy --version` (bare `agy version` is not a subcommand)', () => {
+    expect(findAgent('agy')!.versionCmd).toEqual(['agy', '--version']);
+  });
+
+  it('codex native fallback bootstraps from GitHub, never vendor domains', () => {
+    const codex = findAgent('codex')!;
+    expect(codex.githubReleaseRepo).toBe('openai/codex');
+    const unix = codex.nativeUpdateFallback!.unix.join(' ');
+    expect(unix).toContain('raw.githubusercontent.com/openai/codex/main/scripts/install/install.sh');
+    expect(unix).toContain('CODEX_NON_INTERACTIVE=1');
+    expect(unix).toContain('CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false');
+    expect(unix).not.toContain('chatgpt.com');
+    expect(unix).not.toContain('releases.openai.com');
+    const win = codex.nativeUpdateFallback!.windows.join(' ');
+    expect(win).toContain('raw.githubusercontent.com/openai/codex/main/scripts/install/install.ps1');
+    expect(win).toContain("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'");
+    expect(win).not.toContain('chatgpt.com');
+  });
+});
+
 describe('Windows install layouts', () => {
   it('classifies Windows npm global store under `npm root -g` (no lib/)', () => {
     const r = classifyManager(

@@ -46,6 +46,27 @@ export const KNOWN_AGENTS: AgentDef[] = [
     versionCmd: ['codex', '--version'],
     npmPackage: '@openai/codex',
     brewFormula: 'codex',
+    // `codex update` bootstraps install.sh from chatgpt.com and the script
+    // probes releases.openai.com — both unreachable on some networks. Worse,
+    // `curl … | sh` exits 0 when curl fails (empty pipe → fake success). The
+    // fallback runs the same installer from GitHub with the documented
+    // CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false (GitHub Releases only);
+    // the $(…) && [ -n "$s" ] form makes a blocked fetch exit non-zero.
+    githubReleaseRepo: 'openai/codex',
+    nativeUpdateFallback: {
+      unix: [
+        'sh',
+        '-c',
+        's=$(curl -fsSL https://raw.githubusercontent.com/openai/codex/main/scripts/install/install.sh) && [ -n "$s" ] && printf "%s" "$s" | CODEX_NON_INTERACTIVE=1 CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh',
+      ],
+      windows: [
+        'powershell',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-c',
+        "$env:CODEX_NON_INTERACTIVE='1'; $env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; $s = irm https://raw.githubusercontent.com/openai/codex/main/scripts/install/install.ps1 -UseBasicParsing; if (-not $s) { exit 1 }; iex $s",
+      ],
+    },
   },
   {
     name: 'copilot',
@@ -66,7 +87,10 @@ export const KNOWN_AGENTS: AgentDef[] = [
     name: 'agy',
     label: 'Antigravity CLI',
     nativeUpdate: ['agy', 'update'],
-    versionCmd: ['agy', 'version'],
+    // `agy version` is not a subcommand — agy reads bare positional args as
+    // prompts and exits non-zero, so version detection always came back null
+    // and updates were always reported as "up-to-date".
+    versionCmd: ['agy', '--version'],
   },
   {
     name: 'grok',

@@ -5,7 +5,11 @@ import {
   needsStagedInstall,
   runWithEnoentRetry,
   createSettleGate,
+  updateAgents,
+  versionFromGithubReleaseJson,
+  nativeFallbackCommand,
 } from '../src/update.js';
+import type { AgentDef, DetectedAgent } from '../src/types.js';
 
 describe('runCommand', () => {
   it('reports errno ENOENT when the binary cannot be spawned', async () => {
@@ -108,6 +112,154 @@ describe('compareVersions', () => {
   it('handles missing segments as zero (1.0 vs 1.0.0)', () => {
     expect(compareVersions('1.0', '1.0.0')).toBe(0);
     expect(compareVersions('1.0.1', '1.0')).toBe(1);
+  });
+});
+
+describe('versionFromGithubReleaseJson', () => {
+  it('extracts the version from a release tag', () => {
+    expect(versionFromGithubReleaseJson('{"tag_name":"rust-v0.161.0"}')).toBe('0.161.0');
+    expect(versionFromGithubReleaseJson('{"tag_name":"v1.2.3"}')).toBe('1.2.3');
+  });
+  it('returns null on invalid JSON, missing tag, or non-semver tag', () => {
+    expect(versionFromGithubReleaseJson('not json')).toBeNull();
+    expect(versionFromGithubReleaseJson('{}')).toBeNull();
+    expect(versionFromGithubReleaseJson('{"tag_name":"nightly"}')).toBeNull();
+  });
+});
+
+describe('nativeFallbackCommand', () => {
+  const def: AgentDef = {
+    name: 'codex',
+    label: 'OpenAI Codex',
+    nativeUpdate: ['codex', 'update'],
+    versionCmd: ['codex', '--version'],
+    nativeUpdateFallback: { unix: ['sh', '-c', 'x'], windows: ['powershell', '-c', 'y'] },
+  };
+  it('picks the unix command on posix platforms', () => {
+    expect(nativeFallbackCommand(def, 'linux')).toEqual(['sh', '-c', 'x']);
+    expect(nativeFallbackCommand(def, 'darwin')).toEqual(['sh', '-c', 'x']);
+  });
+  it('picks the windows command on win32', () => {
+    expect(nativeFallbackCommand(def, 'win32')).toEqual(['powershell', '-c', 'y']);
+  });
+  it('returns null when no fallback is defined', () => {
+    const plain: AgentDef = { name: 'a', label: 'a', nativeUpdate: [], versionCmd: [] };
+    expect(nativeFallbackCommand(plain, 'linux')).toBeNull();
+  });
+});
+
+describe('updateAgents native fallback', () => {
+  // Fake agents run `node -e` instead of real updaters; getVersion/getLatest
+  // are injected, so no network is involved.
+  function mkNativeAgent(defOverrides: Partial<AgentDef>, version: string | null): DetectedAgent {
+    const def: AgentDef = {
+      name: 'codex',
+      label: 'OpenAI Codex',
+      nativeUpdate: ['node', '-e', 'process.exit(0)'],
+      versionCmd: ['node', '--version'],
+      ...defOverrides,
+    };
+    return {
+      def,
+      binPath: '/x/codex',
+      realPath: '/x/codex',
+      manager: 'native',
+      version,
+    } as DetectedAgent;
+  }
+  const okFallback = {
+    unix: ['node', '-e', 'process.exit(0)'],
+    windows: ['node', '-e', 'process.exit(0)'],
+  };
+
+  it('runs the fallback when the self-update command fails', async () => {
+    const agent = mkNativeAgent(
+      { nativeUpdate: ['node', '-e', 'process.exit(3)'], nativeUpdateFallback: okFallback },
+      '1.0.0',
+    );
+    const [r] = await updateAgents([agent], { getVersion: async () => '1.0.1' });
+    expect(r!.status).toBe('updated');
+    expect(r!.before).toBe('1.0.0');
+    expect(r!.after).toBe('1.0.1');
+  });
+
+  it('runs the fallback on a fake success (exit 0 but still behind latest)', async () => {
+    const agent = mkNativeAgent(
+      {
+        nativeUpdate: ['node', '-e', 'process.exit(0)'], // blocked `curl | sh` exits 0 doing nothing
+        nativeUpdateFallback: okFallback,
+        githubReleaseRepo: 'openai/codex',
+      },
+      '1.0.0',
+    );
+    let versionCalls = 0;
+    const [r] = await updateAgents([agent], {
+      getLatest: async () => '2.0.0',
+      // stale after the primary run, current after the fallback ran
+      getVersion: async () => (++versionCalls === 1 ? '1.0.0' : '2.0.0'),
+    });
+    expect(versionCalls).toBe(2); // proves the fallback executed
+    expect(r!.status).toBe('updated');
+    expect(r!.after).toBe('2.0.0');
+  });
+
+  it('skips the update entirely when already at the latest release', async () => {
+    const agent = mkNativeAgent(
+      {
+        nativeUpdate: ['node', '-e', 'process.exit(3)'], // would fail if it ran
+        nativeUpdateFallback: okFallback,
+        githubReleaseRepo: 'openai/codex',
+      },
+      '2.0.0',
+    );
+    const [r] = await updateAgents([agent], {
+      getLatest: async () => '2.0.0',
+      getVersion: async () => '2.0.0',
+    });
+    expect(r!.status).toBe('up-to-date');
+  });
+
+  it('fails when both the self-update and the fallback fail, surfacing the fallback output', async () => {
+    const agent = mkNativeAgent(
+      {
+        nativeUpdate: ['node', '-e', 'process.exit(3)'],
+        nativeUpdateFallback: {
+          unix: ['node', '-e', 'console.error("fb-boom"); process.exit(1)'],
+          windows: ['node', '-e', 'console.error("fb-boom"); process.exit(1)'],
+        },
+      },
+      '1.0.0',
+    );
+    const [r] = await updateAgents([agent], { getVersion: async () => '1.0.0' });
+    expect(r!.status).toBe('failed');
+    expect(r!.error).toContain('fb-boom');
+  });
+
+  it('fails when the fallback exits 0 but the version never reaches latest', async () => {
+    const agent = mkNativeAgent(
+      {
+        nativeUpdate: ['node', '-e', 'process.exit(0)'],
+        nativeUpdateFallback: okFallback,
+        githubReleaseRepo: 'openai/codex',
+      },
+      '1.0.0',
+    );
+    const [r] = await updateAgents([agent], {
+      getLatest: async () => '2.0.0',
+      getVersion: async () => '1.0.0', // never updates
+    });
+    expect(r!.status).toBe('failed');
+    expect(r!.error).toContain('did not take effect');
+  });
+
+  it('keeps the old behavior (plain failure) when no fallback is defined', async () => {
+    const agent = mkNativeAgent(
+      { nativeUpdate: ['node', '-e', 'console.error("boom"); process.exit(3)'] },
+      '1.0.0',
+    );
+    const [r] = await updateAgents([agent], { getVersion: async () => '1.0.0' });
+    expect(r!.status).toBe('failed');
+    expect(r!.error).toContain('boom');
   });
 });
 
