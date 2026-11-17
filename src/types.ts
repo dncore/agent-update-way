@@ -6,6 +6,7 @@ export type InstallManager =
   | 'brew' // Homebrew formula
   | 'user' // user-level install under ~/node_modules (npm --prefix ~)
   | 'native' // official installer / standalone binary (claude native, opencode binary, ...)
+  | 'managed' // vendor-managed release store that updates itself (pi: ~/.pi/agent/install)
   | 'local'; // project-local dependency (node_modules/.bin) - never touch these
 
 /** A known AI coding agent that we can detect and update. */
@@ -48,6 +49,8 @@ export interface DetectedAgent {
   nodeRoot?: string;
   /** For brew: installed via `brew install --cask` (path under Caskroom). */
   brewCask?: boolean;
+  /** For managed: the install root owning the release store (e.g. ~/.pi/agent/install). */
+  managedRoot?: string;
   /** Parsed version, may be null if unknown. */
   version: string | null;
   /** Human-readable reason when manager is 'local' (skipped). */

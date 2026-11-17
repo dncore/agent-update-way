@@ -108,6 +108,10 @@ export function buildUpdateCommand(agent: DetectedAgent): string[] | null {
       return null;
     case 'native':
       return def.nativeUpdate.length ? [...def.nativeUpdate] : null;
+    case 'managed':
+      // The vendor owns the release store: it stages, verifies and atomically
+      // activates the new version. Never touch the tree ourselves.
+      return def.nativeUpdate.length ? [...def.nativeUpdate] : null;
     case 'local':
       return null; // never update project dependencies
   }
@@ -176,6 +180,8 @@ export interface UpdateOptions {
   getVersion?: (a: DetectedAgent) => Promise<string | null>;
   /** Override the GitHub latest-release check (mostly for tests). */
   getLatest?: (repo: string) => Promise<string | null>;
+  /** Override the npm registry latest-version check (mostly for tests). */
+  getNpmLatest?: (pkg: string) => Promise<string | null>;
   /** Override the per-command timeout (ms). Default 300_000. */
   timeoutMs?: number;
 }
@@ -428,6 +434,7 @@ async function isProcessRunning(match: string): Promise<boolean> {
 export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions = {}): Promise<UpdateResult[]> {
   const { onProgress, getVersion } = opts;
   const getLatest = opts.getLatest ?? githubLatestVersion;
+  const getNpmLatest = opts.getNpmLatest ?? npmViewVersion;
   const getVersionAfter = getVersion ?? (async (a: DetectedAgent) => {
     // re-run version command after update
     const [bin, ...rest] = a.def.versionCmd;
@@ -557,6 +564,18 @@ export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions 
         code = fb.code;
         output = fb.output;
         after = await getVersionAfter(agent);
+      }
+
+      // A managed install (pi) exits 1 when it cannot reach its version
+      // endpoint (pi.dev/api/latest-version), even though nothing needed
+      // updating. The npm registry is pi's second publication channel, so it
+      // can tell "genuinely failed" from "already current, network blocked".
+      if (code !== 0 && agent.manager === 'managed' && agent.def.npmPackage) {
+        const npmLatest = await getNpmLatest(agent.def.npmPackage);
+        if (npmLatest && before && compareVersions(before, npmLatest) >= 0) {
+          onProgress?.(index, { state: 'success', before, after: after ?? before });
+          return { agent, status: 'up-to-date', before, after: after ?? before };
+        }
       }
 
       if (code !== 0) {

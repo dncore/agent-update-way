@@ -16,6 +16,7 @@ import { detectSkills, updateSkills, skillsStatusLine } from './skills.js';
 import type { AgentPluginsInfo, PiExtensionsInfo } from './types.js';
 import { createRenderer, createSpinner, color } from './render.js';
 import type { Renderer } from './render.js';
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,6 +188,97 @@ async function runSkillsTask(renderer: Renderer, index: number): Promise<void> {
   });
 }
 
+/* ---------- migration ---------- */
+
+/**
+ * pi's only supported migration path: the official installer, which removes
+ * the npm package and builds the managed release store. It is interactive
+ * (reads its menu from /dev/tty), so it gets the terminal, not a pipe. The
+ * `$(…) && [ -n "$s" ]` form makes a blocked fetch exit non-zero instead of
+ * piping an empty script into sh (which would "succeed" doing nothing).
+ */
+const PI_INSTALLER = [
+  'sh',
+  '-c',
+  's=$(curl -fsSL https://pi.dev/install.sh) && [ -n "$s" ] && printf "%s" "$s" | sh',
+];
+
+/** Run a command with the terminal attached, resolving to its exit code. */
+function runInteractive(cmd: string[]): Promise<number> {
+  const [bin, ...args] = cmd;
+  return new Promise((resolve) => {
+    if (!bin) {
+      resolve(1);
+      return;
+    }
+    const child = spawn(bin, args, { stdio: 'inherit' });
+    child.on('error', () => resolve(1));
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+}
+
+async function cmdMigrate(target?: string): Promise<void> {
+  const name = target ?? 'pi';
+  if (name !== 'pi') {
+    console.log(color.yellow(`nothing to migrate for ${name}: only pi's npm → managed migration exists`));
+    process.exitCode = 1;
+    return;
+  }
+  if (process.platform === 'win32') {
+    console.log(
+      color.yellow(
+        'pi managed installs support macOS and Linux only; on Windows keep the npm install (pi update works there).',
+      ),
+    );
+    return;
+  }
+
+  const spinner = createSpinner('Detecting pi');
+  const agents = await detectAllAsync();
+  spinner.done();
+  const pi = agents.find((a) => a.def.name === 'pi');
+  if (!pi) {
+    console.log(color.yellow('pi is not installed (nothing on PATH).'));
+    process.exitCode = 1;
+    return;
+  }
+  if (pi.manager === 'managed') {
+    console.log(
+      color.green(`pi ${pi.version ?? '?'} already uses the managed install at ${pi.managedRoot ?? '?'}`),
+    );
+    return;
+  }
+  if (pi.manager !== 'npm') {
+    console.log(
+      color.yellow(
+        `pi is a ${managerLabel(pi.manager)} install; the pi.dev installer only migrates npm installs.`,
+      ),
+    );
+    return;
+  }
+
+  console.log(`pi ${pi.version ?? '?'} is an npm install (no pinned transitive deps).`);
+  console.log(color.dim('Handing the terminal to the official installer - confirm the migration there.'));
+  console.log(color.dim('Answer n to "Start pi now?" at the end if you do not want pi to launch.\n'));
+  const code = await runInteractive(PI_INSTALLER);
+  if (code !== 0) {
+    console.log(color.red(`\ninstaller exited with code ${code}; pi is unchanged.`));
+    process.exitCode = 1;
+    return;
+  }
+
+  const after = (await detectAllAsync()).find((a) => a.def.name === 'pi');
+  if (after?.manager === 'managed') {
+    console.log(color.green(`\n✔ pi ${after.version ?? '?'} migrated to the managed install at ${after.managedRoot}`));
+  } else {
+    console.log(
+      color.yellow(
+        `\ninstaller finished, but pi still resolves as a ${after ? managerLabel(after.manager) : 'missing'} install.`,
+      ),
+    );
+  }
+}
+
 /* ---------- commands ---------- */
 
 async function cmdList(): Promise<void> {
@@ -346,6 +438,15 @@ async function cmdUpdate(targets: string[]): Promise<void> {
 
   const summary = renderer.stop();
   console.log('\n' + summary);
+
+  // pi's npm install works but no longer pins transitive deps; pi itself
+  // recommends migrating to the managed install on every self-update.
+  const piAgent = allDetected.find((a) => a.def.name === 'pi');
+  if (piAgent?.manager === 'npm' && inScope('pi')) {
+    console.log(
+      color.yellow('\npi runs from an npm install (no pinned transitive deps). Migrate: auway migrate pi'),
+    );
+  }
 }
 
 function cmdHelp(): void {
@@ -355,6 +456,8 @@ Usage:
   auway                      update all detected agents
   auway update [agents...]   update all, or only the named agents
   auway list                 list detected agents (version, manager, path)
+  auway migrate pi           move an npm-installed pi to pi's managed install
+                             (hands the terminal to https://pi.dev/install.sh)
   auway --version            print version
   auway --help               print this help
 
@@ -362,7 +465,9 @@ Agents: pi, claude, opencode, codex, copilot, cursor-agent, agy, grok
 
 auway updates each agent via the install manager that provides it:
   npm global → npm update -g <pkg>   brew → brew upgrade <formula>
-  pnpm/bun   → add -g <pkg>          native → <agent> update
+  pnpm/bun   → add -g <pkg>          native/managed → <agent> update
+  managed = vendor-owned release store (pi: ~/.pi/agent/install), updated by
+  pi itself: staged, version-verified, atomic
 
 Ecosystem tasks (run alongside their host agent, every full update):
   Pi Extensions    pi update --extensions
@@ -400,6 +505,9 @@ async function main(): Promise<void> {
     case 'update':
     case 'up':
       await cmdUpdate(args.slice(1));
+      return;
+    case 'migrate':
+      await cmdMigrate(args[1]);
       return;
     case '--version':
     case '-v':

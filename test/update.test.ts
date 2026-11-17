@@ -263,6 +263,62 @@ describe('updateAgents native fallback', () => {
   });
 });
 
+describe('updateAgents managed installs', () => {
+  // pi's managed self-update exits 1 when it cannot reach pi.dev to learn the
+  // latest version — including when nothing needed updating.
+  function mkManagedAgent(version: string | null, exit = 3): DetectedAgent {
+    return {
+      def: {
+        name: 'pi',
+        label: 'Pi Coding Agent',
+        nativeUpdate: ['node', '-e', `process.exit(${exit})`],
+        versionCmd: ['node', '--version'],
+        npmPackage: '@earendil-works/pi-coding-agent',
+      },
+      binPath: '/x/pi',
+      realPath: '/x/pi',
+      manager: 'managed',
+      managedRoot: '/x/install',
+      version,
+    } as DetectedAgent;
+  }
+
+  it('reports up-to-date when the self-update fails but the registry says current', async () => {
+    const [r] = await updateAgents([mkManagedAgent('1.5.2')], {
+      getVersion: async () => '1.5.2',
+      getNpmLatest: async () => '1.5.2',
+    });
+    expect(r!.status).toBe('up-to-date');
+    expect(r!.error).toBeUndefined();
+  });
+
+  it('still fails when the registry has a newer version', async () => {
+    const [r] = await updateAgents([mkManagedAgent('1.5.1')], {
+      getVersion: async () => '1.5.1',
+      getNpmLatest: async () => '1.5.2',
+    });
+    expect(r!.status).toBe('failed');
+    expect(r!.error).toContain('process.exit(3)');
+  });
+
+  it('fails when the registry cannot be reached either', async () => {
+    const [r] = await updateAgents([mkManagedAgent('1.5.1')], {
+      getVersion: async () => '1.5.1',
+      getNpmLatest: async () => null,
+    });
+    expect(r!.status).toBe('failed');
+  });
+
+  it('reports an update from the managed self-update', async () => {
+    const [r] = await updateAgents([mkManagedAgent('1.5.1', 0)], {
+      getVersion: async () => '1.5.2',
+      getNpmLatest: async () => '1.5.2',
+    });
+    expect(r!.status).toBe('updated');
+    expect(r!.after).toBe('1.5.2');
+  });
+});
+
 describe('needsStagedInstall', () => {
   const mkAgent = (manager: string) =>
     ({

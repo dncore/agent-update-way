@@ -11,7 +11,7 @@ npx auway
 | Agent | Install detected via | Update via |
 |---|---|---|
 | Claude Code | `claude` | `claude update` (native) |
-| Pi Coding Agent | `pi` | `npm update -g --prefix <node-root> @earendil-works/pi-coding-agent` |
+| Pi Coding Agent | `pi` | `pi update pi` (managed install) / `npm update -g --prefix <node-root> @earendil-works/pi-coding-agent` (legacy npm) |
 | Oh My Pi | `omp` | `omp update` (native) / `bun add -g @oh-my-pi/pi-coding-agent` (bun) |
 | OpenCode | `opencode` | `opencode upgrade` (native) / `brew upgrade opencode` |
 | OpenAI Codex | `codex` | `brew upgrade --cask codex` (brew) / `codex update` (native, with GitHub Releases fallback) |
@@ -49,6 +49,43 @@ are skipped, git refs are reconciled):
 - Scoped updates that exclude pi (`auway update claude`) leave pi extensions
   untouched.
 
+## Pi: npm install vs managed install
+
+The pi.dev installer builds a **managed install** (staged, version-verified and
+atomically activated since pi 0.84.3). Since 1.0.1 `pi update` recommends
+migrating to it on every npm self-update, and npm installs no longer ship
+`npm-shrinkwrap.json`, so their transitive deps are unpinned:
+
+```
+~/.pi/agent/install/managed-install.json   {"kind":"pi-managed-install","schemaVersion":1,"layout":"releases-v1"}
+~/.pi/agent/install/current-version        the release the launcher runs
+~/.pi/agent/install/releases/<version>/    node_modules/.bin/pi
+~/.pi/agent/bin/pi                         launcher script (usually symlinked into ~/.local/bin)
+```
+
+auway recognizes this layout by validating the same marker fields pi validates
+(not by directory name), for both the launcher and a PATH entry pointing
+straight into `releases/<v>/node_modules/.bin/pi` — the latter lives under
+`node_modules/` and would otherwise be misread as a project-local dependency
+and skipped. It reports the manager as `managed` and hands updates to
+`pi update pi`, which stages the new release, runs `npm ci` against the
+lockfile served by `pi.dev`, smoke-tests `--version`, atomically flips
+`current-version` and prunes old releases. auway never writes into that tree.
+
+Two consequences are handled explicitly:
+
+- `pi update` **exits 1 when `pi.dev/api/latest-version` is unreachable**, even
+  if nothing needed updating. auway cross-checks the npm registry (pi's second
+  publication channel) and reports *up to date* when the installed version is
+  already current, instead of a bare failure.
+- A legacy npm install is still updated through npm (that is the manager that
+  owns it), and auway prints the migration hint afterwards. `auway migrate pi`
+  hands the terminal to the official installer, which uninstalls the npm
+  package and builds the managed tree; the command is interactive on purpose
+  (the installer's menu reads `/dev/tty`), then re-detects and reports the new
+  layout. Managed installs are macOS/Linux only, so the command refuses on
+  Windows where `pi update` over npm works fine.
+
 ## Plugins & Skills
 
 The same "detect read-only, update via the official mechanism" pattern covers
@@ -85,21 +122,22 @@ full updates only.
 
 Naive updaters call each agent's self-update command. That breaks in the real world:
 
-- `pi update pi` **fails** when `pi` is a global npm install — pi refuses to self-update
-  non-global installations, and `npx` prepends the current project's `node_modules/.bin`
-  to `PATH`, so detection can hit a *project-local* copy of `pi` instead of the global one.
+- `pi update pi` **fails** for *non-global* installations (npx / project-local copies), and
+  `npx` prepends the current project's `node_modules/.bin` to `PATH`, so detection can hit
+  a project-local copy of `pi` instead of the real one.
 - `codex` / `copilot` installed via Homebrew should be updated with `brew upgrade`,
   not their internal self-updater.
 
 **auway** resolves the real path of each binary (`readlink`), classifies its install
-manager (npm global / pnpm / bun / brew formula / brew cask / native / project-local),
-and updates via the manager that actually provides it:
+manager (npm global / pnpm / bun / brew formula / brew cask / native / managed /
+project-local), and updates via the manager that actually provides it:
 
 ```
 npm global  →  npm update -g --prefix <node-root> <pkg>   (works with fnm/nvm multi-version)
 brew cask   →  brew upgrade --cask <formula>
 brew        →  brew upgrade <formula>
 native      →  <agent> update
+managed     →  <agent> update   (vendor-owned release store: pi)
 user-level  →  precise isolated update of ~/node_modules/<pkg> only
               (npm view → npm pack → atomic swap → nested deps)
 project-local node_modules  →  never touched (skipped with a warning)

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   classifyManager,
   extractVersion,
@@ -7,6 +9,8 @@ import {
   nodeRootFromPath,
   brewFormulaFromPath,
   npmShimTarget,
+  managedInstallRoot,
+  managedVersion,
 } from '../src/detect.js';
 import { buildUpdateCommand } from '../src/update.js';
 import type { DetectedAgent } from '../src/types.js';
@@ -140,6 +144,69 @@ describe('classifyManager', () => {
     const r = classifyManager('/Users/x/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js', '/Users/x');
     expect(r.manager).toBe('user');
     expect(r.target).toBe('@oh-my-pi/pi-coding-agent');
+  });
+});
+
+describe('pi managed installs', () => {
+  const MARKER = { kind: 'pi-managed-install', schemaVersion: 1, layout: 'releases-v1' };
+
+  /** Build <tmp>/agent/bin/pi + <tmp>/agent/install/{marker,current-version,releases}. */
+  function mkManaged(marker: object | string = MARKER) {
+    const agentDir = join(mkdtempSync(join(tmpdir(), 'auway-managed-')), 'agent');
+    const installDir = join(agentDir, 'install');
+    mkdirSync(join(agentDir, 'bin'), { recursive: true });
+    mkdirSync(join(installDir, 'releases', '1.5.2'), { recursive: true });
+    writeFileSync(join(agentDir, 'bin', 'pi'), '#!/bin/sh\n');
+    writeFileSync(
+      join(installDir, 'managed-install.json'),
+      typeof marker === 'string' ? marker : JSON.stringify(marker),
+    );
+    writeFileSync(join(installDir, 'current-version'), '1.5.2\n');
+    return { installDir, launcher: join(agentDir, 'bin', 'pi') };
+  }
+
+  it('classifies the launcher as managed, not native', () => {
+    const { installDir, launcher } = mkManaged();
+    expect(classifyManager(launcher, homedir(), null)).toEqual({ manager: 'managed', managedRoot: installDir });
+  });
+
+  it('classifies a direct link into a release tree as managed, not project-local', () => {
+    const { installDir } = mkManaged();
+    const releaseFile = join(
+      installDir,
+      'releases',
+      '1.5.2',
+      'node_modules',
+      '@earendil-works',
+      'pi-coding-agent',
+      'dist',
+      'bundle',
+      'cli.js',
+    );
+    expect(classifyManager(releaseFile, homedir(), null)).toEqual({
+      manager: 'managed',
+      managedRoot: installDir,
+    });
+  });
+
+  it('stays native when the marker is not pi managed-install', () => {
+    const { launcher } = mkManaged({ ...MARKER, kind: 'something-else' });
+    expect(classifyManager(launcher, homedir(), null)).toEqual({ manager: 'native' });
+  });
+
+  it('accepts a marker written with a UTF-8 BOM (PowerShell rewrite)', () => {
+    const { installDir, launcher } = mkManaged(String.fromCharCode(0xfeff) + JSON.stringify(MARKER));
+    expect(managedInstallRoot(launcher)).toBe(installDir);
+  });
+
+  it('reads the active version from current-version', () => {
+    const { installDir } = mkManaged();
+    expect(managedVersion(installDir)).toBe('1.5.2');
+  });
+
+  it('updates through pi\'s own managed self-update', () => {
+    const agent = mkAgent({ manager: 'managed', managedRoot: '/x/install' });
+    expect(buildUpdateCommand(agent)).toEqual(['pi', 'update', 'pi']);
   });
 });
 

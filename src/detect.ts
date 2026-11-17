@@ -142,6 +142,61 @@ export function packageNameFromPath(realPath: string): string | null {
 }
 
 /**
+ * Whether `dir` holds pi's managed-install marker (`managed-install.json`).
+ *
+ * pi validates exactly these three fields before it will update a release
+ * store, so we use the same check rather than inferring from directory names.
+ * The BOM strip mirrors pi's own fix for PowerShell 5.1 rewriting the file.
+ */
+export function isManagedInstallRoot(dir: string): boolean {
+  try {
+    const raw = readFileSync(join(dir, 'managed-install.json'), 'utf8').replace(String.fromCharCode(0xfeff), '');
+    const marker = JSON.parse(raw) as { kind?: unknown; schemaVersion?: unknown; layout?: unknown };
+    return (
+      marker.kind === 'pi-managed-install' &&
+      marker.schemaVersion === 1 &&
+      marker.layout === 'releases-v1'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the managed-install root that provides `realPath`, or null.
+ *
+ * Two shapes reach PATH:
+ *   <agentDir>/bin/pi                             the launcher pi installs
+ *   <root>/releases/<version>/node_modules/.bin/pi  a direct link into a release
+ * The launcher is the normal case; the release link matters because it lives
+ * under /node_modules/ and would otherwise be misread as a project-local dep.
+ */
+export function managedInstallRoot(realPath: string): string | null {
+  const p = realPath.replace(/\\/g, '/');
+  const candidates: string[] = [];
+  const binDir = dirname(p);
+  if (binDir.endsWith('/bin')) {
+    // <agentDir>/bin/pi → <agentDir>/install
+    candidates.push(`${dirname(binDir)}/install`);
+  }
+  const release = /^(.*)\/releases\/[^/]+\//.exec(p);
+  if (release?.[1]) candidates.push(release[1]);
+  for (const candidate of candidates) {
+    if (isManagedInstallRoot(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Version recorded in a managed install's `current-version` file, or null. */
+export function managedVersion(root: string): string | null {
+  try {
+    return extractVersion(readFileSync(join(root, 'current-version'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Classify the install manager based on the real path.
  *
  * All `/node_modules/` paths are handled here: global stores (npm/pnpm/bun)
@@ -164,9 +219,15 @@ export function classifyManager(
   target?: string;
   nodeRoot?: string;
   brewCask?: boolean;
+  managedRoot?: string;
 } {
   // Windows realpath returns backslash paths; normalize once for markers.
   const p = realPath.replace(/\\/g, '/');
+  // Vendor-managed release store — checked before the /node_modules/ branch,
+  // because a direct link into releases/<v>/node_modules/.bin/pi would
+  // otherwise be misread as a project-local dependency and skipped.
+  const managedRoot = managedInstallRoot(p);
+  if (managedRoot) return { manager: 'managed', managedRoot };
   if (p.includes('/node_modules/')) {
     // user-level install: <home>/node_modules/<pkg> (npm install --prefix ~)
     const homeNodeModules = join(home, 'node_modules').replace(/\\/g, '/');
@@ -297,7 +358,7 @@ export async function detectAllAsync(): Promise<DetectedAgent[]> {
 
   return found.map((f, i): DetectedAgent => {
     const realPath = resolveRealPath(f.binPath);
-    const { manager, target, nodeRoot, brewCask } = classifyManager(realPath);
+    const { manager, target, nodeRoot, brewCask, managedRoot } = classifyManager(realPath);
     const agent: DetectedAgent = {
       def: f.def,
       binPath: f.binPath,
@@ -306,8 +367,12 @@ export async function detectAllAsync(): Promise<DetectedAgent[]> {
       managerTarget: target,
       nodeRoot,
       brewCask,
+      managedRoot,
       version: versions[i] ?? null,
     };
+    // The launcher can fail (missing release dir); current-version still tells
+    // us what the managed install believes it is running.
+    if (!agent.version && managedRoot) agent.version = managedVersion(managedRoot);
     if (manager === 'local') {
       agent.skipReason =
         'project-local dependency (under node_modules) - not a global install, skipping';
@@ -339,8 +404,8 @@ export function detectAll(): DetectedAgent[] {
     if (!binPath) continue;
 
     const realPath = resolveRealPath(binPath);
-    const { manager, target, nodeRoot, brewCask } = classifyManager(realPath);
-    const version = getVersion(def);
+    const { manager, target, nodeRoot, brewCask, managedRoot } = classifyManager(realPath);
+    const version = getVersion(def) ?? (managedRoot ? managedVersion(managedRoot) : null);
 
     const agent: DetectedAgent = {
       def,
@@ -350,6 +415,7 @@ export function detectAll(): DetectedAgent[] {
       managerTarget: target,
       nodeRoot,
       brewCask,
+      managedRoot,
       version,
     };
 
@@ -379,6 +445,8 @@ export function managerLabel(m: InstallManager): string {
       return 'user-level (~/node_modules)';
     case 'native':
       return 'native';
+    case 'managed':
+      return 'managed';
     case 'local':
       return 'project-local';
   }
