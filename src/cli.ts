@@ -133,12 +133,14 @@ async function runPluginsTask(
   const before = await detect();
   if (!before.total) {
     // Nothing installed → no row at all (an empty category is not a result).
+    // A failed listing (`enabled: false`) is a different thing: that is a real
+    // problem, so it stays visible instead of masquerading as "none installed".
     renderer.update(index, {
       state: 'skipped',
       before: null,
       after: null,
-      error: `no ${label.toLowerCase()} installed`,
-      silent: true,
+      error: before.enabled ? `no ${label.toLowerCase()} installed` : before.summary,
+      silent: before.enabled,
     });
     return;
   }
@@ -165,11 +167,13 @@ async function runPluginsTask(
 async function runSkillsTask(renderer: Renderer, index: number): Promise<void> {
   const before = detectSkills();
   if (!before.total) {
+    // Nothing to do → no row (same rule as the plugin/extension tasks).
     renderer.update(index, {
       state: 'skipped',
       before: null,
       after: null,
       error: 'no skills found',
+      silent: true,
     });
     return;
   }
