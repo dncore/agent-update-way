@@ -93,11 +93,13 @@ function printAgentPlugins(title: string, info: AgentPluginsInfo): void {
 async function runPiExtensionsTask(renderer: Renderer, index: number): Promise<void> {
   const before = await detectPiExtensions();
   if (!before.total) {
+    // Nothing installed → no row at all (an empty category is not a result).
     renderer.update(index, {
       state: 'skipped',
       before: null,
       after: null,
       error: 'no pi extensions installed',
+      silent: true,
     });
     return;
   }
@@ -130,11 +132,13 @@ async function runPluginsTask(
 ): Promise<void> {
   const before = await detect();
   if (!before.total) {
+    // Nothing installed → no row at all (an empty category is not a result).
     renderer.update(index, {
       state: 'skipped',
       before: null,
       after: null,
       error: `no ${label.toLowerCase()} installed`,
+      silent: true,
     });
     return;
   }
@@ -464,8 +468,9 @@ Usage:
 Agents: pi, claude, opencode, codex, copilot, cursor-agent, agy, grok
 
 auway updates each agent via the install manager that provides it:
-  npm global → npm update -g <pkg>   brew → brew upgrade <formula>
-  pnpm/bun   → add -g <pkg>          native/managed → <agent> update
+  npm global → npm install -g <pkg>@latest   brew → brew upgrade <formula>
+  pnpm/bun   → add -g <pkg>                  native/managed → <agent> update
+  (if npm rejects the global tree, auway installs the package in isolation)
   managed = vendor-owned release store (pi: ~/.pi/agent/install), updated by
   pi itself: staged, version-verified, atomic
 

@@ -72,6 +72,12 @@ export interface TaskUpdate {
   before?: string | null;
   after?: string | null;
   error?: string;
+  /**
+   * Terminal report-only flag: the task found nothing to do (no plugins, no
+   * extensions) and must not be rendered or counted — an absent category is
+   * not a result worth printing.
+   */
+  silent?: boolean;
 }
 
 /** A pi extension/skill package installed via `pi install` (npm / git / local). */

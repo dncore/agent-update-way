@@ -211,7 +211,7 @@ describe('pi managed installs', () => {
 });
 
 describe('buildUpdateCommand', () => {
-  it('npm global → npm update -g --prefix <nodeRoot> <pkg>', () => {
+  it('npm global → npm install -g --prefix <nodeRoot> <pkg>@latest', () => {
     const a = mkAgent({
       manager: 'npm',
       managerTarget: '@earendil-works/pi-coding-agent',
@@ -219,12 +219,17 @@ describe('buildUpdateCommand', () => {
     });
     expect(buildUpdateCommand(a)).toEqual([
       'npm',
-      'update',
+      'install',
       '-g',
       '--prefix',
       '/Users/x/.local/share/fnm/node-versions/v24.13.0/installation',
-      '@earendil-works/pi-coding-agent',
+      '@earendil-works/pi-coding-agent@latest',
     ]);
+  });
+
+  it('npm global without a node root → npm install -g <pkg>@latest', () => {
+    const a = mkAgent({ manager: 'npm', managerTarget: 'opencode-ai' });
+    expect(buildUpdateCommand(a)).toEqual(['npm', 'install', '-g', 'opencode-ai@latest']);
   });
 
   it('brew cask → brew upgrade --cask <formula>', () => {

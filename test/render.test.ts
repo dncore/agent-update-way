@@ -14,6 +14,7 @@ function task(partial: {
   after?: string | null;
   error?: string;
   elapsedMs?: number;
+  silent?: boolean;
 }): RenderTask {
   return {
     label: partial.label,
@@ -22,6 +23,7 @@ function task(partial: {
     after: partial.after ?? null,
     error: partial.error,
     elapsedMs: partial.elapsedMs,
+    silent: partial.silent,
   };
 }
 
@@ -81,6 +83,19 @@ describe('buildPanelLines', () => {
     expect(bar).toContain('(1/3)'); // B is done
   });
 
+  it('renders no row for a silent (nothing installed) task', () => {
+    const lines = buildPanelLines(
+      [
+        task({ label: 'Grok Plugins', state: 'skipped', error: 'no grok plugins installed', silent: true }),
+        task({ label: 'Claude Code', state: 'success', before: '1', after: '1' }),
+      ],
+      0,
+    );
+    expect(lines.some((l) => stripAnsi(l).includes('Grok Plugins'))).toBe(false);
+    // still counts toward the progress bar: it is a finished task
+    expect(stripAnsi(lines[lines.length - 1]!)).toContain('(2/2)');
+  });
+
   it('shows a full bar with done when all tasks are terminal', () => {
     const lines = buildPanelLines(
       [
@@ -106,6 +121,16 @@ describe('summaryLine', () => {
       ]),
     );
     expect(s).toBe('Done: 1 updated, 1 up to date, 1 skipped, 1 failed.');
+  });
+
+  it('excludes silent tasks from every count', () => {
+    const s = stripAnsi(
+      summaryLine([
+        task({ label: 'A', state: 'success', before: '1', after: '2' }),
+        task({ label: 'Grok Plugins', state: 'skipped', silent: true }),
+      ]),
+    );
+    expect(s).toBe('Done: 1 updated, 0 up to date, 0 skipped, 0 failed.');
   });
 });
 
@@ -133,5 +158,15 @@ describe('createRenderer (non-TTY)', () => {
     expect(results[0]).toContain('✔ A');
     expect(results[1]).toContain('✔ B  2.0 → 2.1');
     expect(summary).toBe('Done: 1 updated, 1 up to date, 0 skipped, 0 failed.');
+  });
+
+  it('prints nothing for a silent task', () => {
+    const emitted: string[] = [];
+    const renderer = createRenderer({ tty: false, onLine: (line) => emitted.push(stripAnsi(line)) });
+    renderer.add('Grok Plugins');
+    renderer.update(0, { state: 'skipped', error: 'no grok plugins installed', silent: true });
+    const summary = stripAnsi(renderer.stop());
+    expect(emitted).toEqual([]);
+    expect(summary).toBe('Done: 0 updated, 0 up to date, 0 skipped, 0 failed.');
   });
 });

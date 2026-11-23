@@ -67,6 +67,8 @@ export interface RenderTask {
   before: string | null;
   after: string | null;
   error?: string;
+  /** Terminal, nothing-to-do task: keep it out of the panel and the summary. */
+  silent?: boolean;
   /** ms since the task started running (for elapsed display). */
   elapsedMs?: number;
   /** wall-clock when the task started running. */
@@ -84,6 +86,8 @@ export function formatDuration(ms: number): string {
 }
 
 function taskLines(t: RenderTask, frame: string): string[] {
+  // Nothing to do (no plugins / no extensions installed): print no row at all.
+  if (t.silent) return [];
   const dur =
     t.elapsedMs !== undefined && t.elapsedMs > 0 ? color.dim(`  ${formatDuration(t.elapsedMs)}`) : '';
   switch (t.state) {
@@ -164,12 +168,15 @@ export function buildPanelLines(tasks: RenderTask[], frameIndex: number): string
 
 /** Compute the summary line printed once everything is done. */
 export function summaryLine(tasks: RenderTask[]): string {
-  const updated = tasks.filter(
+  // Silent tasks are not results: an agent with no plugins contributes nothing
+  // to "N skipped" either.
+  const counted = tasks.filter((t) => !t.silent);
+  const updated = counted.filter(
     (t) => t.state === 'success' && t.before !== null && t.after !== null && t.before !== t.after,
   ).length;
-  const upToDate = tasks.filter((t) => t.state === 'success').length - updated;
-  const skipped = tasks.filter((t) => t.state === 'skipped').length;
-  const failed = tasks.filter((t) => t.state === 'failed').length;
+  const upToDate = counted.filter((t) => t.state === 'success').length - updated;
+  const skipped = counted.filter((t) => t.state === 'skipped').length;
+  const failed = counted.filter((t) => t.state === 'failed').length;
   return color.bold(
     `Done: ${updated} updated, ${upToDate} up to date, ${skipped} skipped, ${failed} failed.`,
   );
@@ -275,6 +282,7 @@ export function createRenderer(opts: { tty: boolean; onLine?: (line: string) => 
       t.before = u.before ?? t.before;
       t.after = u.after ?? t.after;
       t.error = u.error;
+      t.silent = u.silent;
       t.elapsedMs = t.startedAt !== undefined ? Date.now() - t.startedAt : 0;
       if (tty) {
         paint();

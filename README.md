@@ -11,14 +11,14 @@ npx auway
 | Agent | Install detected via | Update via |
 |---|---|---|
 | Claude Code | `claude` | `claude update` (native) |
-| Pi Coding Agent | `pi` | `pi update pi` (managed install) / `npm update -g --prefix <node-root> @earendil-works/pi-coding-agent` (legacy npm) |
+| Pi Coding Agent | `pi` | `pi update pi` (managed install) / `npm install -g --prefix <node-root> @earendil-works/pi-coding-agent@latest` (legacy npm) |
 | Oh My Pi | `omp` | `omp update` (native) / `bun add -g @oh-my-pi/pi-coding-agent` (bun) |
 | OpenCode | `opencode` | `opencode upgrade` (native) / `brew upgrade opencode` |
 | OpenAI Codex | `codex` | `brew upgrade --cask codex` (brew) / `codex update` (native, with GitHub Releases fallback) |
 | GitHub Copilot CLI | `copilot` | `brew upgrade --cask copilot-cli` (brew cask) |
 | Cursor Agent | `cursor-agent` | `cursor-agent update` |
 | Antigravity CLI | `agy` | `agy update` |
-| Grok Build | `grok` | `grok update` (native) / `npm update -g @xai-official/grok` / `brew upgrade --cask grok-build` |
+| Grok Build | `grok` | `grok update` (native) / `npm install -g @xai-official/grok@latest` / `brew upgrade --cask grok-build` |
 | Pi Extensions | `~/.pi/agent/settings.json` | `pi update --extensions` (native) |
 | Claude Plugins | `claude plugin list` | `claude plugin marketplace update` + `claude plugin update <id> -y` |
 | Codex Plugins | `codex plugin list` | `codex plugin marketplace upgrade` + `codex plugin add <id>` |
@@ -40,7 +40,7 @@ are skipped, git refs are reconciled):
   production installs, pinned-version skips, git ref reconciliation).
 - In the update panel extensions appear as a single aggregate task;
   `auway list` shows each package with its installed/latest version.
-- The extensions task is **serialized after pi's own update**: `npm update -g`
+- The extensions task is **serialized after pi's own update**: `npm install -g`
   deletes and re-creates the bin/pi symlink, so spawning `pi` concurrently can
   hit `spawn pi ENOENT`. auway holds the extensions task until pi's update
   settles (its terminal event fires only after the post-update `pi --version`
@@ -79,7 +79,13 @@ Two consequences are handled explicitly:
   publication channel) and reports *up to date* when the installed version is
   already current, instead of a bare failure.
 - A legacy npm install is still updated through npm (that is the manager that
-  owns it), and auway prints the migration hint afterwards. `auway migrate pi`
+  owns it), and auway prints the migration hint afterwards. If npm itself
+  refuses — classically `EUNSUPPORTEDPROTOCOL`, because some *unrelated*
+  globally installed package carries a `link:` or `workspace:` dependency that
+  poisons every reify of the global tree — auway retries in isolation: pack the
+  tarball, swap it into `lib/node_modules/<pkg>` and install only that
+  package's dependencies nested inside its own directory. The global tree is
+  never read. `auway migrate pi`
   hands the terminal to the official installer, which uninstalls the npm
   package and builds the managed tree; the command is interactive on purpose
   (the installer's menu reads `/dev/tty`), then re-detects and reports the new
@@ -93,6 +99,10 @@ the plugin ecosystems of Claude Code, Codex and Grok, plus local skills. Each
 appears as one aggregate task in the update panel and runs **behind its host
 agent's settle gate** (the host's own update may be swapping its binary —
 spawning it inside that window fails with ENOENT).
+
+An agent with **no plugins installed** (or pi with no extensions) produces no
+row at all and is not counted as "skipped" — an absent category is not a
+result worth printing.
 
 - **Claude Plugins** — detected via `claude plugin list --json`; updated by
   refreshing every marketplace (`claude plugin marketplace update`) and then
@@ -133,7 +143,10 @@ manager (npm global / pnpm / bun / brew formula / brew cask / native / managed /
 project-local), and updates via the manager that actually provides it:
 
 ```
-npm global  →  npm update -g --prefix <node-root> <pkg>   (works with fnm/nvm multi-version)
+npm global  →  npm install -g --prefix <node-root> <pkg>@latest   (works with fnm/nvm multi-version)
+               └─ if npm rejects the global tree (EUNSUPPORTEDPROTOCOL from an
+                  unrelated global package's link:/workspace: spec), the package
+                  is installed in isolation: pack → swap → nested deps
 brew cask   →  brew upgrade --cask <formula>
 brew        →  brew upgrade <formula>
 native      →  <agent> update
@@ -240,7 +253,7 @@ Done: 2 updated, 9 up to date, 1 skipped, 0 failed.
   Nothing to audit; no supply-chain surface beyond the CLI itself.
 - **Install-manager-aware updates** — the key difference from naive updaters (see above).
 - **fnm/nvm multi-version safe** — a package installed under node v24's global root is
-  updated via `npm update -g --prefix <that node root>`, not whatever node happens to be
+  updated via `npm install -g --prefix <that node root>`, not whatever node happens to be
   first in `PATH`.
 - **Concurrent updates** — failures in one agent never block the others.
 - **Project-local installs are never touched.**
@@ -280,7 +293,7 @@ installers can be given more time with `AUWAY_TIMEOUT_MS`
 `claude update` was observed dying mid-download at the old 5-minute cap.
 
 npm-installed agents are updated with a staged tarball swap (pack → extract →
-directory rename) instead of `npm update -g` — faster, and it skips
+directory rename) instead of `npm install -g` — faster, and it skips
 completely when the installed version already matches the registry.
 
 **Windows file-locking caveat**: while POSIX lets you replace a running

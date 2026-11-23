@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import {
   compareVersions,
   runCommand,
   needsStagedInstall,
+  npmGlobalPackageDir,
   runWithEnoentRetry,
   createSettleGate,
   updateAgents,
@@ -316,6 +320,105 @@ describe('updateAgents managed installs', () => {
     });
     expect(r!.status).toBe('updated');
     expect(r!.after).toBe('1.5.2');
+  });
+});
+
+describe('updateAgents npm fallback', () => {
+  // The fake `npm` is a #!/bin/sh script, so this only runs on POSIX.
+  const posix = process.platform === 'win32' ? it.skip : it;
+
+  /**
+   * Prepend a fake `npm` to PATH: `npm install -g …` fails exactly like a
+   * global tree containing a `link:` dependency does, while `view` / `pack` /
+   * the isolated `install --prefix` are served locally (no registry access).
+   */
+  async function withFakeNpm<T>(viewVersion: string | null, fn: () => Promise<T>): Promise<T> {
+    const dir = mkdtempSync(join(tmpdir(), 'auway-fake-npm-'));
+    const shim = join(dir, 'npm');
+    writeFileSync(
+      shim,
+      `#!/bin/sh
+if [ "$1" = "install" ] && [ "$2" = "-g" ]; then
+  echo 'npm error code EUNSUPPORTEDPROTOCOL' >&2
+  echo 'npm error Unsupported URL Type "link:": link:' >&2
+  exit 1
+fi
+case "$1" in
+  view) ${viewVersion ? `echo "${viewVersion}"` : 'exit 1'} ;;
+  pack)
+    mkdir -p "$4/pkg/package"
+    printf '{"name":"is-number","version":"${viewVersion ?? '0.0.0'}"}' > "$4/pkg/package/package.json"
+    tar -czf "$4/is-number.tgz" -C "$4/pkg" package
+    printf '[{"filename":"is-number.tgz"}]'
+    ;;
+  *) exit 0 ;;
+esac
+`,
+    );
+    chmodSync(shim, 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${dir}${delimiter}${savedPath}`;
+    try {
+      return await fn();
+    } finally {
+      process.env.PATH = savedPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  function mkNpmAgent(prefix: string): DetectedAgent {
+    return {
+      def: {
+        name: 'pi',
+        label: 'Pi Coding Agent',
+        nativeUpdate: ['pi', 'update', 'pi'],
+        versionCmd: ['pi', '--version'],
+        npmPackage: '@earendil-works/pi-coding-agent',
+      },
+      binPath: join(prefix, 'bin', 'pi'),
+      realPath: join(prefix, 'lib', 'node_modules', 'is-number', 'index.js'),
+      manager: 'npm',
+      managerTarget: 'is-number',
+      nodeRoot: prefix,
+      version: '5.0.0',
+    } as DetectedAgent;
+  }
+
+  posix('installs in isolation when npm rejects the global tree', async () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'auway-npm-prefix-'));
+    const targetDir = npmGlobalPackageDir(prefix, 'is-number');
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(
+      join(targetDir, 'package.json'),
+      JSON.stringify({ name: 'is-number', version: '5.0.0' }),
+    );
+    try {
+      const [r] = await withFakeNpm('7.0.0', () =>
+        updateAgents([mkNpmAgent(prefix)], { getVersion: async () => '7.0.0' }),
+      );
+      expect(r!.status).toBe('updated');
+      expect(r!.before).toBe('5.0.0');
+      expect(r!.after).toBe('7.0.0');
+      const swapped = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf8'));
+      expect(swapped.version).toBe('7.0.0');
+    } finally {
+      rmSync(prefix, { recursive: true, force: true });
+    }
+  });
+
+  posix('reports the npm error and the failed isolated install when both fail', async () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'auway-npm-prefix-'));
+    mkdirSync(npmGlobalPackageDir(prefix, 'is-number'), { recursive: true });
+    try {
+      const [r] = await withFakeNpm(null, () =>
+        updateAgents([mkNpmAgent(prefix)], { getVersion: async () => '5.0.0' }),
+      );
+      expect(r!.status).toBe('failed');
+      expect(r!.error).toContain('EUNSUPPORTEDPROTOCOL');
+      expect(r!.error).toContain('isolated install failed');
+    } finally {
+      rmSync(prefix, { recursive: true, force: true });
+    }
   });
 });
 

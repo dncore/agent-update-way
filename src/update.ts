@@ -82,10 +82,19 @@ export function buildUpdateCommand(agent: DetectedAgent): string[] | null {
     case 'npm': {
       const pkg = managerTarget ?? def.npmPackage;
       if (!pkg) return null;
-      // Update via the node root that owns the package (fnm/nvm may run a
-      // different node version than the one that owns this global install).
-      if (nodeRoot) return ['npm', 'update', '-g', '--prefix', nodeRoot, pkg];
-      return ['npm', 'update', '-g', pkg];
+      // `npm install -g <pkg>@latest`, not `npm update -g <pkg>`: update
+      // re-resolves *every* globally installed package, so one unrelated
+      // global package carrying an unresolvable spec (`link:`, `workspace:`)
+      // makes the whole run die with EUNSUPPORTEDPROTOCOL even though the
+      // agent itself is perfectly installable (npm/cli#8387). Install only
+      // reifies the named package's subtree — and it is the command pi's own
+      // npm self-update runs. Global installs have no saved semver range, so
+      // both commands target `latest` anyway.
+      // The node root that owns the package is passed explicitly: fnm/nvm may
+      // run a different node version than the one that owns this global install.
+      const target = `${pkg}@latest`;
+      if (nodeRoot) return ['npm', 'install', '-g', '--prefix', nodeRoot, target];
+      return ['npm', 'install', '-g', target];
     }
     case 'pnpm': {
       const pkg = managerTarget ?? def.npmPackage;
@@ -252,6 +261,11 @@ export function nativeFallbackCommand(def: AgentDef, platform: NodeJS.Platform):
  */
 export function needsStagedInstall(platform: NodeJS.Platform, agent: DetectedAgent): boolean {
   return platform === 'win32' && agent.manager === 'npm';
+}
+
+/** POSIX global npm layout: `<nodeRoot>/lib/node_modules/<pkg>`. */
+export function npmGlobalPackageDir(nodeRoot: string, pkg: string): string {
+  return join(nodeRoot, 'lib', 'node_modules', ...pkg.split('/'));
 }
 
 /**
@@ -523,7 +537,28 @@ export async function updateAgents(agents: DetectedAgent[], opts: UpdateOptions 
         if (!cmd) return fail('skipped', agent.skipReason ?? 'no update command available');
         const { code, output } = await runCommand(cmd, opts.timeoutMs);
         if (code !== 0) {
-          return fail('failed', output.split('\n').slice(0, 8).join('\n') || `exit code ${code}`);
+          // npm itself refused (classically EUNSUPPORTEDPROTOCOL from an
+          // unrelated global package's `link:`/`workspace:` spec, which
+          // poisons every npm reify of the global root). Fall back to the
+          // isolated pack+swap install, which resolves only this package's
+          // own dependency subtree and never reads the global tree.
+          const primary = output.split('\n').slice(0, 8).join('\n') || `exit code ${code}`;
+          const isolated = agent.nodeRoot
+            ? await installPackageStaged(
+                npmGlobalPackageDir(agent.nodeRoot, pkg),
+                agent,
+                getVersionAfter,
+                opts.timeoutMs,
+              )
+            : null;
+          if (isolated?.status === 'updated' || isolated?.status === 'up-to-date') {
+            onProgress?.(index, { state: 'success', before: isolated.before, after: isolated.after });
+            return isolated;
+          }
+          const why = isolated
+            ? `\n(npm rejected the global-tree update; the isolated install failed too: ${isolated.error ?? 'unknown error'})`
+            : '';
+          return fail('failed', primary + why);
         }
         const afterNpm = await getVersionAfter(agent);
         const changedNpm = afterNpm !== null && before !== afterNpm;
